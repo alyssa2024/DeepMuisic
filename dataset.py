@@ -90,15 +90,14 @@ class BTTPatchDataset(Dataset):
         self.hop_len = hop_revs * num_probes
 
         n_points = len(features)
-
+        
+        self.starts = list(range(0, n_points - self.seq_len + 1, self.hop_len))
         if len(self.starts) == 0:
             raise ValueError(
                 f"No patches generated. n_points={n_points}, "
                 f"seq_len={self.seq_len}. Reduce window_revs."
             )
-        
-        self.starts = list(range(0, n_points - self.seq_len + 1, self.hop_len))
-
+            
     def __len__(self):
         return len(self.starts)
 

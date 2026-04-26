@@ -70,6 +70,86 @@ def gaussian_kl(mu, logvar, prior_mu=0.0, prior_var=1.0):
 
     return kl_per_dim.sum(dim=-1).mean()
 
+def log_prob_gaussian(x, mu, logvar):
+    """
+    log N(x; mu, exp(logvar))
+
+    Args:
+        x, mu, logvar: [B, K]
+    Returns:
+        log_q: [B, K]
+    """
+    return -0.5 * (
+        math.log(2.0 * math.pi)
+        + logvar
+        + (x - mu) ** 2 / torch.exp(logvar)
+    )
+
+def log_prob_maxwell(w, a):
+    """
+    Maxwell-Boltzmann log probability.
+
+    p(w; a) = sqrt(2/pi) * w^2 / a^3 * exp(-w^2 / (2a^2))
+    support: w > 0
+
+    Args:
+        w: [B, K]
+        a: scalar or [K]
+    Returns:
+        log_p: [B, K]
+    """
+    eps = 1e-8
+
+    w = torch.clamp(w, min=eps)
+
+    a = torch.as_tensor(
+        a,
+        dtype=w.dtype,
+        device=w.device,
+    )
+
+    log_coef = 0.5 * torch.log(
+        torch.tensor(2.0 / math.pi, dtype=w.dtype, device=w.device)
+    )
+
+    log_p = (
+        log_coef
+        + 2.0 * torch.log(w)
+        - 3.0 * torch.log(a)
+        - (w ** 2) / (2.0 * a ** 2)
+    )
+
+    return log_p
+
+def frequency_kl_gaussian_to_maxwell(mu_w, logvar_w, prior_a_w, n_samples=1):
+    """
+    Monte Carlo KL:
+        KL[q(w|x) || p(w)]
+        q(w|x) = Gaussian(mu_w, exp(logvar_w))
+        p(w)   = Maxwell(prior_a_w)
+
+    Args:
+        mu_w:      [B, K]
+        logvar_w:  [B, K]
+        prior_a_w: scalar or [K]
+    Returns:
+        scalar KL
+    """
+    kl_samples = []
+
+    for _ in range(n_samples):
+        eps = torch.randn_like(mu_w)
+        w = mu_w + torch.exp(0.5 * logvar_w) * eps
+        w = torch.clamp(w, min=1e-6)
+
+        log_q = log_prob_gaussian(w, mu_w, logvar_w)
+        log_p = log_prob_maxwell(w, prior_a_w)
+
+        kl_samples.append((log_q - log_p).sum(dim=-1))  # [B]
+
+    kl = torch.stack(kl_samples, dim=0).mean(dim=0).mean()
+
+    return kl
 
 def maxwell_kl(a_q, a_p):
     """
@@ -203,7 +283,8 @@ def compute_harmonic_elbo(
         loss, recon_loss, total_kl
     """
 
-    (mu_A, logvar_A), a_w, (mu_phi, kappa_phi) = dist_params
+    # (mu_A, logvar_A), a_w, (mu_phi, kappa_phi) = dist_params
+    (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi) = dist_params
 
     recon_loss = complex_mse_loss(x_hat, x_target)
 
@@ -217,13 +298,22 @@ def compute_harmonic_elbo(
     else:
         kl_A = torch.zeros((), dtype=mu_A.dtype, device=mu_A.device)
 
+    # if use_kl_w:
+    #     kl_w = maxwell_kl(
+    #         a_q=a_w,
+    #         a_p=prior_a_w,
+    #     )
+    # else:
+    #     kl_w = torch.zeros((), dtype=a_w.dtype, device=a_w.device)
     if use_kl_w:
-        kl_w = maxwell_kl(
-            a_q=a_w,
-            a_p=prior_a_w,
+        kl_w = frequency_kl_gaussian_to_maxwell(
+            mu_w=mu_w,
+            logvar_w=logvar_w,
+            prior_a_w=prior_a_w,
+            n_samples=1,
         )
     else:
-        kl_w = torch.zeros((), dtype=a_w.dtype, device=a_w.device)
+        kl_w = torch.zeros((), dtype=mu_w.dtype, device=mu_w.device)
 
     if use_kl_phi:
         kl_phi = von_mises_kl(

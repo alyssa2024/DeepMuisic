@@ -9,21 +9,21 @@ class PhysicalHarmonicVAE(nn.Module):
         self.encoder = encoder
         self.num_harmonics = encoder.output_dim
 
-    def reparameterize(self, mu_A, logvar_A, a_w, mu_phi, kappa_phi):
+    def reparameterize(self, mu_A, logvar_A, mu_w, logvar_w, mu_phi, kappa_phi):
         """
         Factorized posterior:
 
-            q(z|x) = Π_k q(A_k|x) q(w_k|x) q(phi_k|x)
+            q(z|x) = product_k q(A_k|x) q(w_k|x) q(phi_k|x)
 
         A:
             Gaussian posterior.
 
         w:
-            Maxwell posterior implemented as the norm of a 3D Gaussian vector.
+            Gaussian posterior, then clamped to positive values.
 
         phi:
             Wrapped-normal approximation for differentiable sampling.
-            The prior is still von Mises; this is only the posterior sampling path.
+            The prior remains von Mises; this only defines the sampling path.
         """
 
         # Amplitude A ~ Gaussian
@@ -31,25 +31,29 @@ class PhysicalHarmonicVAE(nn.Module):
         eps_A = torch.randn_like(std_A)
         A = mu_A + std_A * eps_A
 
-        # Frequency w ~ Maxwell(a_w)
-        eps_w = torch.randn(*a_w.shape, 3, device=a_w.device, dtype=a_w.dtype)
-        w = a_w * torch.sqrt(torch.sum(eps_w ** 2, dim=-1) + 1e-8)
+        # Frequency w ~ Gaussian
+        std_w = torch.exp(0.5 * logvar_w)
+        eps_w = torch.randn_like(std_w)
+        w = mu_w + std_w * eps_w
+
+        # Frequency must stay positive
+        w = torch.clamp(w, min=1e-6)
 
         # Phase phi: differentiable wrapped-normal approximation
         std_phi = torch.sqrt(1.0 / (kappa_phi + 1e-8))
         eps_phi = torch.randn_like(mu_phi)
         phi = mu_phi + std_phi * eps_phi
 
-        # wrap to [-pi, pi)
+        # Wrap phase to [-pi, pi)
         phi = torch.atan2(torch.sin(phi), torch.cos(phi))
 
         return A, w, phi
 
     def decode(self, A, w, phi, t):
         """
-        Known physical decoder:
+        Physics-informed deterministic decoder:
 
-            x_hat(t) = Σ_k A_k exp(j(w_k t + phi_k))
+            x_hat(t) = sum_k A_k * exp(j * (w_k * t + phi_k))
 
         Args:
             A:   [B, K]
@@ -61,16 +65,21 @@ class PhysicalHarmonicVAE(nn.Module):
             x_hat: complex tensor [B, L]
         """
 
-        A = A.unsqueeze(-1)      # [B, K, 1]
-        w = w.unsqueeze(-1)      # [B, K, 1]
+        A = A.unsqueeze(-1)  # [B, K, 1]
+        w = w.unsqueeze(-1)  # [B, K, 1]
         phi = phi.unsqueeze(-1)  # [B, K, 1]
 
         if t.dim() == 2:
-            t = t.unsqueeze(1)   # [B, 1, L]
+            t = t.unsqueeze(1)  # [B, 1, L]
 
-        theta = w * t + phi      # [B, K, L]
+        theta = w * t + phi  # [B, K, L]
 
-        harmonics = torch.polar(A, theta)  # complex [B, K, L]
+        unit_complex = torch.polar(
+            torch.ones_like(theta),
+            theta,
+        )  # exp(j * theta), complex [B, K, L]
+
+        harmonics = A.to(unit_complex.dtype) * unit_complex
 
         x_hat = torch.sum(harmonics, dim=1)  # complex [B, L]
 
@@ -86,16 +95,17 @@ class PhysicalHarmonicVAE(nn.Module):
         Returns:
             x_hat: complex [B, L]
             dist_params:
-                (mu_A, logvar_A), a_w, (mu_phi, kappa_phi)
+                (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi)
         """
 
         dist_params = self.encoder(x, probe_ids=probe_ids)
-        (mu_A, logvar_A), a_w, (mu_phi, kappa_phi) = dist_params
+        (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi) = dist_params
 
         A, w, phi = self.reparameterize(
             mu_A,
             logvar_A,
-            a_w,
+            mu_w,
+            logvar_w,
             mu_phi,
             kappa_phi,
         )
