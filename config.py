@@ -13,9 +13,9 @@ CONFIG = {
         "base_freq": 150.0,  # Theoretical maximum detectable frequency is about 975 Hz
         "fluctuation_delta": 0.001,
         "probes": [0, 28, 111.08, 166.15],  # Physical installation angles (deg)
-        "n_revs": 200,
-        "window_revs": 8,
-        "hop_revs": 2,
+        "n_revs": 20000,
+        "window_revs": 32,
+        "hop_revs": 16,
         "batch_size": 8,
     },
     "signal": {
@@ -33,9 +33,16 @@ CONFIG = {
         "use_standard_pe": False,
     },
     "training": {
-        "epochs": 500,
+        "epochs": 100,
         "lr": 1e-4,
         "max_grad_norm": 0.1,
+    },
+    "eval": {
+        "val_ratio": 0.2,
+        "eval_every": 5,
+        "dense_factor": 4,
+        "target_recon_btt_mse": 0.1,
+        "split_seed": 42,
     },
     "loss": {
         "beta": 1e-5,
@@ -50,7 +57,7 @@ CONFIG = {
     "checkpoint": {
         "dir": "checkpoints",
         "name": "latest.pt",
-        "save_every": 10,
+        "save_every": 20,
         "resume_from": None,  # Example: "checkpoints/latest.pt"
     },
 }
