@@ -5,6 +5,7 @@ Edit values here, then run `main.py`.
 """
 
 CONFIG = {
+    "seed": 42,
     "data": {
         "input_dim": 6,
         "num_harmonics": 4,
@@ -45,5 +46,11 @@ CONFIG = {
         "use_kl_A": True,
         "use_kl_w": True,
         "use_kl_phi": True,
+    },
+    "checkpoint": {
+        "dir": "checkpoints",
+        "name": "latest.pt",
+        "save_every": 10,
+        "resume_from": None,  # Example: "checkpoints/latest.pt"
     },
 }

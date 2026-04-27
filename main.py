@@ -1,4 +1,5 @@
-from torch.utils.data import DataLoader
+import os
+from torch.utils.data import DataLoader, random_split
 import torch
 import numpy as np
 
@@ -6,6 +7,7 @@ from dataset import BTTPatchDataset, build_btt_point_features
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from VAE import PhysicalHarmonicVAE
 from loss import compute_harmonic_elbo
+from eval import evaluate_model
 from synthesis_dataset import (
     simulate_fluctuating_speed_btt,
     generate_complex_harmonic_displacement,
@@ -19,12 +21,43 @@ def build_prior_a_w(freqs_hz):
     return true_w / (2.0 * np.sqrt(2.0 / np.pi))
 
 
+def set_global_seed(seed: int):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def save_checkpoint(
+    path,
+    model,
+    optimizer,
+    epoch,
+    total_steps,
+    nonfinite_steps,
+    grad_clip_triggered_steps,
+    epoch_to_target,
+):
+    state = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "total_steps": total_steps,
+        "nonfinite_steps": nonfinite_steps,
+        "grad_clip_triggered_steps": grad_clip_triggered_steps,
+        "epoch_to_target": epoch_to_target,
+    }
+    torch.save(state, path)
+
+
 def main():
     data_cfg = CONFIG["data"]
     signal_cfg = CONFIG["signal"]
     model_cfg = CONFIG["model"]
     train_cfg = CONFIG["training"]
     loss_cfg = CONFIG["loss"]
+    seed = CONFIG.get("seed", 42)
+    set_global_seed(seed)
 
     prior_a_w = build_prior_a_w(signal_cfg["freqs_hz"])
 
@@ -88,16 +121,90 @@ def main():
         num_probes=data_cfg["num_probes"],
     )
 
-    dataloader = DataLoader(
+    eval_cfg = CONFIG.get("eval", {})
+    val_ratio = eval_cfg.get("val_ratio", 0.2)
+    eval_every = eval_cfg.get("eval_every", 10)
+    dense_factor = eval_cfg.get("dense_factor", 4)
+    target_recon = eval_cfg.get("target_recon_btt_mse", 0.1)
+    split_seed = eval_cfg.get("split_seed", 42)
+    ckpt_cfg = CONFIG.get("checkpoint", {})
+    ckpt_dir = ckpt_cfg.get("dir", "checkpoints")
+    ckpt_save_every = ckpt_cfg.get("save_every", 10)
+    ckpt_resume_from = ckpt_cfg.get("resume_from", None)
+    ckpt_name = ckpt_cfg.get("name", "latest.pt")
+    if ckpt_save_every <= 0:
+        raise ValueError(f"checkpoint.save_every must be > 0, got {ckpt_save_every}")
+
+    n_total = len(dataset)
+    n_val = max(1, int(round(n_total * val_ratio)))
+    n_train = max(1, n_total - n_val)
+    if n_train + n_val > n_total:
+        n_val = n_total - n_train
+
+    generator = torch.Generator().manual_seed(split_seed)
+    train_set, val_set = random_split(
         dataset,
+        [n_train, n_val],
+        generator=generator,
+    )
+
+    train_loader = DataLoader(
+        train_set,
         batch_size=data_cfg["batch_size"],
         shuffle=True,
         drop_last=True,
     )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=data_cfg["batch_size"],
+        shuffle=False,
+        drop_last=False,
+    )
 
-    model.train()
-    for epoch in range(train_cfg["epochs"]):
-        for x_batch, t_batch, probe_ids, rev_ids, target_batch in dataloader:
+    print(
+        f"Dataset split: total={n_total}, train={len(train_set)}, val={len(val_set)}, "
+        f"eval_every={eval_every}"
+    )
+
+    start_epoch = 0
+    total_steps = 0
+    nonfinite_steps = 0
+    grad_clip_triggered_steps = 0
+    epoch_to_target = None
+
+    if ckpt_resume_from:
+        if not os.path.exists(ckpt_resume_from):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_resume_from}")
+        checkpoint = torch.load(ckpt_resume_from, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = int(checkpoint.get("epoch", -1)) + 1
+        total_steps = int(checkpoint.get("total_steps", 0))
+        nonfinite_steps = int(checkpoint.get("nonfinite_steps", 0))
+        grad_clip_triggered_steps = int(checkpoint.get("grad_clip_triggered_steps", 0))
+        epoch_to_target = checkpoint.get("epoch_to_target", None)
+        print(
+            f"Resumed from checkpoint: {ckpt_resume_from} "
+            f"(start_epoch={start_epoch}, total_steps={total_steps})"
+        )
+
+    if start_epoch >= train_cfg["epochs"]:
+        print(
+            f"No training needed: start_epoch={start_epoch} >= epochs={train_cfg['epochs']}. "
+            f"Increase training.epochs or use an earlier checkpoint."
+        )
+        return
+
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    for epoch in range(start_epoch, train_cfg["epochs"]):
+        model.train()
+        last_dist_params = None
+        last_loss = None
+        last_recon = None
+        last_kl = None
+
+        for x_batch, t_batch, probe_ids, rev_ids, target_batch in train_loader:
             x_batch = x_batch.to(device)  # [B, L, 6]
             t_batch = t_batch.to(device)  # [B, L]
             probe_ids = probe_ids.to(device)  # [B, L]
@@ -127,26 +234,118 @@ def main():
                 use_kl_phi=loss_cfg["use_kl_phi"],
             )
 
+            if not torch.isfinite(loss):
+                nonfinite_steps += 1
+                continue
+
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(),
                 max_norm=train_cfg["max_grad_norm"],
             )
+            if torch.isfinite(grad_norm) and grad_norm > train_cfg["max_grad_norm"]:
+                grad_clip_triggered_steps += 1
+
             optimizer.step()
+            total_steps += 1
+            last_dist_params = dist_params
+            last_loss = loss
+            last_recon = recon
+            last_kl = kl
 
         with torch.no_grad():
-            (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi) = dist_params
-            print(
-                f"epoch={epoch:04d} "
-                f"loss={loss.item():.6f} "
-                f"recon={recon.item():.6f} "
-                f"kl={kl.item():.6f} | "
-                f"A_mu_mean={mu_A.mean().item():.4e} "
-                f"A_mu_std={mu_A.std().item():.4e} | "
-                f"phi_mean={mu_phi.mean().item():.4f} "
-                f"kappa_mean={kappa_phi.mean().item():.4f}"
+            if last_dist_params is None:
+                print(f"epoch={epoch:04d} no valid training step (all batches non-finite or dropped).")
+            else:
+                (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi) = last_dist_params
+                print(
+                    f"epoch={epoch:04d} "
+                    f"loss={last_loss.item():.6f} "
+                    f"recon={last_recon.item():.6f} "
+                    f"kl={last_kl.item():.6f} | "
+                    f"A_mu_mean={mu_A.mean().item():.4e} "
+                    f"A_mu_std={mu_A.std().item():.4e} | "
+                    f"phi_mean={mu_phi.mean().item():.4f} "
+                    f"kappa_mean={kappa_phi.mean().item():.4f}"
+                )
+                print("w_mean per harmonic:", mu_w.mean(dim=0).detach().cpu().numpy())
+
+        need_eval = (
+            epoch == 0
+            or (epoch + 1) % eval_every == 0
+            or epoch == (train_cfg["epochs"] - 1)
+        )
+        if need_eval:
+            val_metrics = evaluate_model(
+                model=model,
+                dataloader=val_loader,
+                device=device,
+                true_freqs_hz=signal_cfg["freqs_hz"],
+                true_amps=signal_cfg["amplitudes_m"],
+                true_phases_rad=signal_cfg["phases_rad"],
+                amp_scale=amp_scale,
+                prior_a_w=prior_a_w,
+                loss_cfg=loss_cfg,
+                dense_factor=dense_factor,
             )
-            print("w_mean per harmonic:", mu_w.mean(dim=0).detach().cpu().numpy())
+
+            if epoch_to_target is None and val_metrics["recon_btt_mse"] <= target_recon:
+                epoch_to_target = epoch + 1
+
+            grad_clip_ratio = (
+                grad_clip_triggered_steps / max(total_steps, 1)
+            )
+            train_nan_or_inf_rate = nonfinite_steps / max(total_steps + nonfinite_steps, 1)
+
+            print(
+                "[EVAL] "
+                f"epoch={epoch:04d} "
+                f"loss={val_metrics['loss']:.6f} "
+                f"recon_btt_mse={val_metrics['recon_btt_mse']:.6f} "
+                f"recon_dense_mse={val_metrics['recon_dense_mse']:.6f} "
+                f"freq_mae_hz={val_metrics['freq_mae_hz']:.4f} "
+                f"amp_mape={val_metrics['amp_mape']:.4f} "
+                f"phase_circ_mae_rad={val_metrics['phase_circ_mae_rad']:.4f} "
+                f"total_kl={val_metrics['total_kl']:.6f} "
+                f"kl_A={val_metrics['kl_A']:.6f} "
+                f"kl_w={val_metrics['kl_w']:.6f} "
+                f"kl_phi={val_metrics['kl_phi']:.6f} "
+                f"patch_freq_std_hz={val_metrics['patch_freq_std_hz']:.4f} "
+                f"harmonic_order_consistency={val_metrics['harmonic_order_consistency']:.4f} "
+                f"val_nan_or_inf_rate={val_metrics['nan_or_inf_rate']:.6f} "
+                f"train_nan_or_inf_rate={train_nan_or_inf_rate:.6f} "
+                f"grad_clip_ratio={grad_clip_ratio:.6f} "
+                f"epoch_to_target={epoch_to_target if epoch_to_target is not None else -1}"
+            )
+
+        should_save_ckpt = (
+            (epoch + 1) % ckpt_save_every == 0
+            or epoch == (train_cfg["epochs"] - 1)
+        )
+        if should_save_ckpt:
+            latest_ckpt = os.path.join(ckpt_dir, ckpt_name)
+            epoch_ckpt = os.path.join(ckpt_dir, f"epoch_{epoch + 1:04d}.pt")
+            save_checkpoint(
+                path=latest_ckpt,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                total_steps=total_steps,
+                nonfinite_steps=nonfinite_steps,
+                grad_clip_triggered_steps=grad_clip_triggered_steps,
+                epoch_to_target=epoch_to_target,
+            )
+            save_checkpoint(
+                path=epoch_ckpt,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                total_steps=total_steps,
+                nonfinite_steps=nonfinite_steps,
+                grad_clip_triggered_steps=grad_clip_triggered_steps,
+                epoch_to_target=epoch_to_target,
+            )
+            print(f"Saved checkpoint: {latest_ckpt}")
 
 
 if __name__ == "__main__":
