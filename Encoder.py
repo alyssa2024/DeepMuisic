@@ -75,27 +75,24 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         self._fc = torch.nn.Linear(hidden_dim, hidden_dim_dense)
 
-        self._fc_A = torch.nn.Linear(hidden_dim_dense, 2 * self.num_harmonics)
-        # self._fc_w = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
-        self._fc_w_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
-        self._fc_w_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
-
-        self._fc_phi_mu = torch.nn.Linear(hidden_dim_dense, 2 * self.num_harmonics)
-        self._fc_phi_kappa = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
+        self._fc_amp_real = torch.nn.Linear(hidden_dim_dense, 2 * self.num_harmonics)
+        self._fc_amp_imag = torch.nn.Linear(hidden_dim_dense, 2 * self.num_harmonics)
+        self._fc_f_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
+        self._fc_f_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
 
         self._device = device
         self._causal_mask = causal_mask
         self._softplus = torch.nn.Softplus(beta=1.0)
 
         self.register_buffer(
-            "w_center",
+            "f_center",
             torch.tensor(
-                [2 * np.pi * 167.0, 2 * np.pi * 341.0, 2 * np.pi * 635.0, 2 * np.pi * 872.0],
+                [167.0, 341.0, 635.0, 872.0],
                 dtype=torch.float32,
             ),
         )
 
-        self.w_band = 150.0
+        self.f_band = 150.0
 
     def generate_causal_mask(self, seq_len):
         # Upper triangular mask: (seq_len, seq_len)
@@ -134,22 +131,24 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         y = F.relu(self._fc(pooled))  # [B, hidden_dim_dense]
 
-        params_A = self._fc_A(y)
-        mu_A = params_A[..., : self.num_harmonics]
-        logvar_A = params_A[..., self.num_harmonics :]
+        params_amp_real = self._fc_amp_real(y)
+        mu_amp_real = params_amp_real[..., : self.num_harmonics]
+        logvar_amp_real = torch.clamp(
+            params_amp_real[..., self.num_harmonics :],
+            min=-14.0,
+            max=4.0,
+        )
 
-        # a_w = self._softplus(self._fc_w(y)) + 1e-6
-        raw_w_mu = self._fc_w_mu(y)
-        mu_w = self.w_center + self.w_band * torch.tanh(raw_w_mu)
-        logvar_w = self._fc_w_logvar(y)
-        logvar_w = torch.clamp(logvar_w, min=-14.0, max=-6.0)
+        params_amp_imag = self._fc_amp_imag(y)
+        mu_amp_imag = params_amp_imag[..., : self.num_harmonics]
+        logvar_amp_imag = torch.clamp(
+            params_amp_imag[..., self.num_harmonics :],
+            min=-14.0,
+            max=4.0,
+        )
 
-        phi_mu_raw = self._fc_phi_mu(y)
-        sin_phi = phi_mu_raw[..., : self.num_harmonics]
-        cos_phi = phi_mu_raw[..., self.num_harmonics :]
-        mu_phi = torch.atan2(sin_phi, cos_phi)
+        raw_f_mu = self._fc_f_mu(y)
+        mu_f = self.f_center + self.f_band * torch.tanh(raw_f_mu)
+        logvar_f = torch.clamp(self._fc_f_logvar(y), min=-14.0, max=-6.0)
 
-        kappa_phi = self._softplus(self._fc_phi_kappa(y)) + 1e-6
-        kappa_phi = torch.clamp(kappa_phi, min=20.0, max=200.0)
-
-        return (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi)
+        return (mu_amp_real, logvar_amp_real), (mu_amp_imag, logvar_amp_imag), (mu_f, logvar_f)

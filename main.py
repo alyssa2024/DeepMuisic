@@ -96,8 +96,8 @@ def main():
     x_observed, _ = generate_complex_harmonic_displacement(
         t=t_samples,
         freqs=signal_cfg["freqs_hz"],
-        alphas=signal_cfg["amplitudes_m"],
-        phis=signal_cfg["phases_rad"],
+        amp_real=signal_cfg["amp_real_m"],
+        amp_imag=signal_cfg["amp_imag_m"],
         snr_db=signal_cfg["snr_db"],
     )
 
@@ -225,14 +225,14 @@ def main():
                 x_hat=x_hat,
                 dist_params=dist_params,
                 beta=loss_cfg["beta"],
-                prior_A_mu=loss_cfg["prior_A_mu"],
-                prior_A_var=loss_cfg["prior_A_var"],
+                prior_amp_real_mu=loss_cfg["prior_amp_real_mu"],
+                prior_amp_real_var=loss_cfg["prior_amp_real_var"],
+                prior_amp_imag_mu=loss_cfg["prior_amp_imag_mu"],
+                prior_amp_imag_var=loss_cfg["prior_amp_imag_var"],
                 prior_a_w=prior_a_w,
-                prior_phi_mu=loss_cfg["prior_phi_mu"],
-                prior_phi_kappa=loss_cfg["prior_phi_kappa"],
-                use_kl_A=loss_cfg["use_kl_A"],
+                use_kl_amp_real=loss_cfg["use_kl_amp_real"],
+                use_kl_amp_imag=loss_cfg["use_kl_amp_imag"],
                 use_kl_w=loss_cfg["use_kl_w"],
-                use_kl_phi=loss_cfg["use_kl_phi"],
             )
 
             if not torch.isfinite(loss):
@@ -258,22 +258,21 @@ def main():
             if last_dist_params is None:
                 print(f"epoch={epoch:04d} no valid training step (all batches non-finite or dropped).")
             else:
-                (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi) = last_dist_params
+                (mu_amp_real, _), (mu_amp_imag, _), (mu_f, _) = last_dist_params
                 print(
                     f"epoch={epoch:04d} "
                     f"loss={last_loss.item():.6f} "
                     f"recon={last_recon.item():.6f} "
                     f"kl={last_kl.item():.6f} | "
-                    f"A_mu_mean={mu_A.mean().item():.4e} "
-                    f"A_mu_std={mu_A.std().item():.4e} | "
-                    f"phi_mean={mu_phi.mean().item():.4f} "
-                    f"kappa_mean={kappa_phi.mean().item():.4f}"
+                    f"a_real_mu_mean={mu_amp_real.mean().item():.4e} "
+                    f"a_imag_mu_mean={mu_amp_imag.mean().item():.4e} "
+                    f"f_mean={mu_f.mean().item():.4f}"
                 )
-                print("w_mean per harmonic:", mu_w.mean(dim=0).detach().cpu().numpy())
-                w_offset = mu_w - model.encoder.w_center[None, :]
-                w_ratio = w_offset / model.encoder.w_band
-                print("w_offset per harmonic:", w_offset.mean(dim=0).detach().cpu().numpy())
-                print("w_ratio per harmonic:", w_ratio.mean(dim=0).detach().cpu().numpy())
+                print("f_mean per harmonic:", mu_f.mean(dim=0).detach().cpu().numpy())
+                f_offset = mu_f - model.encoder.f_center[None, :]
+                f_ratio = f_offset / model.encoder.f_band
+                print("f_offset per harmonic:", f_offset.mean(dim=0).detach().cpu().numpy())
+                print("f_ratio per harmonic:", f_ratio.mean(dim=0).detach().cpu().numpy())
 
         need_eval = (
             epoch == 0
@@ -286,8 +285,8 @@ def main():
                 dataloader=val_loader,
                 device=device,
                 true_freqs_hz=signal_cfg["freqs_hz"],
-                true_amps=signal_cfg["amplitudes_m"],
-                true_phases_rad=signal_cfg["phases_rad"],
+                true_amp_real=signal_cfg["amp_real_m"],
+                true_amp_imag=signal_cfg["amp_imag_m"],
                 amp_scale=amp_scale,
                 prior_a_w=prior_a_w,
                 loss_cfg=loss_cfg,
@@ -310,12 +309,12 @@ def main():
                 f"recon_btt_mse_det={val_metrics['recon_btt_mse_det']:.6f} "
                 f"recon_dense_mse={val_metrics['recon_dense_mse']:.6f} "
                 f"freq_mae_hz={val_metrics['freq_mae_hz']:.4f} "
-                f"amp_mape={val_metrics['amp_mape']:.4f} "
-                f"phase_circ_mae_rad={val_metrics['phase_circ_mae_rad']:.4f} "
+                f"amp_real_mape={val_metrics['amp_real_mape']:.4f} "
+                f"amp_imag_mape={val_metrics['amp_imag_mape']:.4f} "
                 f"total_kl={val_metrics['total_kl']:.6f} "
-                f"kl_A={val_metrics['kl_A']:.6f} "
+                f"kl_amp_real={val_metrics['kl_amp_real']:.6f} "
+                f"kl_amp_imag={val_metrics['kl_amp_imag']:.6f} "
                 f"kl_w={val_metrics['kl_w']:.6f} "
-                f"kl_phi={val_metrics['kl_phi']:.6f} "
                 f"patch_freq_std_hz={val_metrics['patch_freq_std_hz']:.4f} "
                 f"harmonic_order_consistency={val_metrics['harmonic_order_consistency']:.4f} "
                 f"val_nan_or_inf_rate={val_metrics['nan_or_inf_rate']:.6f} "

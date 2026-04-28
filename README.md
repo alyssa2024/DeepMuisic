@@ -1,12 +1,12 @@
 # DeepMuisic: Physics-Informed VAE for BTT Harmonic Inference
 
 This repository implements a physics-informed variational model for Blade Tip Timing (BTT) signals in PyTorch.
-The model infers harmonic parameters (amplitude, angular frequency, phase) from irregular samples and reconstructs the complex displacement with a deterministic physical decoder.
+The model infers harmonic parameters (complex-amplitude real part, complex-amplitude imaginary part, frequency) from irregular samples and reconstructs the complex displacement with a deterministic physical decoder.
 
 Physical model:
 
 \[
-x_t = \sum_{k=1}^{K}\alpha_k \exp\left(j(\omega_k t+\phi_k)\right)
+x_t = \sum_{k=1}^{K}(a_{k,\mathrm{real}} + j a_{k,\mathrm{imag}})\exp\left(j 2\pi f_k t\right)
 \]
 
 ## 1. Repository Structure
@@ -29,13 +29,12 @@ DeepMuisic/
 - `Encoder.py`
   - `VariationalIndependentTimeSeriesTransformer`
   - Encodes a patch sequence and outputs posterior parameters:
-    - `q(A|x): mu_A, logvar_A`
-    - `q(w|x): mu_w, logvar_w`
-    - `q(phi|x): mu_phi, kappa_phi`
+    - `q(a_real|x): mu_amp_real, logvar_amp_real`
+    - `q(a_imag|x): mu_amp_imag, logvar_amp_imag`
+    - `q(f|x): mu_f, logvar_f`
 - `VAE.py`
   - `PhysicalHarmonicVAE`
   - Reparameterizes latent variables and decodes with the fixed harmonic equation (complex-valued output).
-  - Amplitude is mapped to non-negative values (`softplus`).
 - `loss.py`
   - `compute_harmonic_elbo()`
   - Reconstruction term (complex MSE over real/imag channels) + KL regularization terms.
@@ -110,8 +109,8 @@ python synthesis_dataset.py
 - `recon_btt_mse_det`
 - `recon_dense_mse`
 - `freq_mae_hz`
-- `amp_mape`
-- `phase_circ_mae_rad`
+- `amp_real_mape`
+- `amp_imag_mape`
 - `patch_freq_std_hz`
 - `harmonic_order_consistency`
 

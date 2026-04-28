@@ -62,20 +62,20 @@ def simulate_fluctuating_speed_btt(
     )
 
 
-def generate_complex_harmonic_displacement(t, freqs, alphas, phis, snr_db=None):
+def generate_complex_harmonic_displacement(t, freqs, amp_real, amp_imag, snr_db=None):
     """
     Generate complex blade displacement with a multi-harmonic model.
 
     Model:
-        x_t = sum_k alpha_k * exp(j * (omega_k * t + phi_k))
+        x_t = sum_k (a_k_real + j a_k_imag) * exp(j * 2pi * f_k * t)
     """
     # Initialize complex displacement
     x_t = np.zeros(len(t), dtype=complex)
 
     # Sum K harmonic components
-    for f_k, alpha_k, phi_k in zip(freqs, alphas, phis):
-        omega_k = 2 * np.pi * f_k  # Convert frequency (Hz) to angular frequency (rad/s)
-        x_t += alpha_k * np.exp(1j * (omega_k * t + phi_k))
+    for f_k, a_real_k, a_imag_k in zip(freqs, amp_real, amp_imag):
+        complex_amp_k = a_real_k + 1j * a_imag_k
+        x_t += complex_amp_k * np.exp(1j * (2 * np.pi * f_k * t))
 
     # Add complex Gaussian white noise if requested
     if snr_db is not None:
@@ -117,16 +117,16 @@ if __name__ == "__main__":
     # 2) Harmonic displacement parameters
     # K = 4 components
     f_k = [167.0, 341.0, 635.0, 872.0]  # Frequency (Hz)
-    alpha_k = [0.0006, 0.0010, 0.0008, 0.0009]  # Amplitude (m)
-    phi_k = [0.0, 1.0, 2.0, 3.0]  # Initial phase (rad)
+    amp_real_k = [0.0006, 0.0005403, -0.0003329, -0.0008910]
+    amp_imag_k = [0.0, 0.0008415, 0.0007274, 0.0001270]
     SNR = 20  # Signal-to-noise ratio (dB)
 
     # Generate complex displacement signal x_t
     x_t_observed, x_t_true = generate_complex_harmonic_displacement(
         t=t_samples,
         freqs=f_k,
-        alphas=alpha_k,
-        phis=phi_k,
+        amp_real=amp_real_k,
+        amp_imag=amp_imag_k,
         snr_db=SNR,
     )
 

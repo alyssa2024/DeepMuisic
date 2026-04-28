@@ -1,6 +1,6 @@
-import math
 import torch
 import torch.nn.functional as F
+import math
 
 
 def complex_mse_loss(x_hat_complex, target_ri):
@@ -261,14 +261,14 @@ def compute_harmonic_elbo(
     x_hat,
     dist_params,
     beta=1e-3,
-    prior_A_mu=0.0,
-    prior_A_var=1.0,
+    prior_amp_real_mu=0.0,
+    prior_amp_real_var=1.0,
+    prior_amp_imag_mu=0.0,
+    prior_amp_imag_var=1.0,
     prior_a_w=1000.0,
-    prior_phi_mu=0.0,
-    prior_phi_kappa=0.0,
-    use_kl_A=True,
+    use_kl_amp_real=True,
+    use_kl_amp_imag=True,
     use_kl_w=True,
-    use_kl_phi=True,
 ):
     """
     Negative ELBO loss.
@@ -277,55 +277,51 @@ def compute_harmonic_elbo(
         x_target: [B, L, 2]
         x_hat:    complex [B, L]
         dist_params:
-            (mu_A, logvar_A), a_w, (mu_phi, kappa_phi)
+            (mu_amp_real, logvar_amp_real), (mu_amp_imag, logvar_amp_imag), (mu_f, logvar_f)
 
     Returns:
         loss, recon_loss, total_kl
     """
 
-    # (mu_A, logvar_A), a_w, (mu_phi, kappa_phi) = dist_params
-    (mu_A, logvar_A), (mu_w, logvar_w), (mu_phi, kappa_phi) = dist_params
+    (mu_amp_real, logvar_amp_real), (mu_amp_imag, logvar_amp_imag), (mu_f, logvar_f) = dist_params
 
     recon_loss = complex_mse_loss(x_hat, x_target)
 
-    if use_kl_A:
-        kl_A = gaussian_kl(
-            mu_A,
-            logvar_A,
-            prior_mu=prior_A_mu,
-            prior_var=prior_A_var,
+    if use_kl_amp_real:
+        kl_amp_real = gaussian_kl(
+            mu_amp_real,
+            logvar_amp_real,
+            prior_mu=prior_amp_real_mu,
+            prior_var=prior_amp_real_var,
         )
     else:
-        kl_A = torch.zeros((), dtype=mu_A.dtype, device=mu_A.device)
+        kl_amp_real = torch.zeros((), dtype=mu_amp_real.dtype, device=mu_amp_real.device)
 
-    # if use_kl_w:
-    #     kl_w = maxwell_kl(
-    #         a_q=a_w,
-    #         a_p=prior_a_w,
-    #     )
-    # else:
-    #     kl_w = torch.zeros((), dtype=a_w.dtype, device=a_w.device)
+    if use_kl_amp_imag:
+        kl_amp_imag = gaussian_kl(
+            mu_amp_imag,
+            logvar_amp_imag,
+            prior_mu=prior_amp_imag_mu,
+            prior_var=prior_amp_imag_var,
+        )
+    else:
+        kl_amp_imag = torch.zeros((), dtype=mu_amp_imag.dtype, device=mu_amp_imag.device)
+
     if use_kl_w:
         kl_w = frequency_kl_gaussian_to_maxwell(
-            mu_w=mu_w,
-            logvar_w=logvar_w,
-            prior_a_w=prior_a_w,
+            mu_w=2.0 * torch.pi * mu_f,
+            logvar_w=math.log((2.0 * math.pi) ** 2) + logvar_f,
+            prior_a_w=2.0 * math.pi * torch.as_tensor(
+                prior_a_w,
+                dtype=mu_f.dtype,
+                device=mu_f.device,
+            ),
             n_samples=1,
         )
     else:
-        kl_w = torch.zeros((), dtype=mu_w.dtype, device=mu_w.device)
+        kl_w = torch.zeros((), dtype=mu_f.dtype, device=mu_f.device)
 
-    if use_kl_phi:
-        kl_phi = von_mises_kl(
-            mu_q=mu_phi,
-            kappa_q=kappa_phi,
-            mu_p=prior_phi_mu,
-            kappa_p=prior_phi_kappa,
-        )
-    else:
-        kl_phi = torch.zeros((), dtype=kappa_phi.dtype, device=kappa_phi.device)
-
-    total_kl = kl_A + kl_w + kl_phi
+    total_kl = kl_amp_real + kl_amp_imag + kl_w
 
     loss = recon_loss + beta * total_kl
 
