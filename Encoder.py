@@ -92,7 +92,7 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
             ),
         )
 
-        self.f_band = 150.0
+        self.f_band = 15.0
 
     def generate_causal_mask(self, seq_len):
         # Upper triangular mask: (seq_len, seq_len)
