@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
 
 
 class PhysicalHarmonicVAE(nn.Module):
@@ -26,10 +27,11 @@ class PhysicalHarmonicVAE(nn.Module):
             The prior remains von Mises; this only defines the sampling path.
         """
 
-        # Amplitude A ~ Gaussian
+        # Amplitude A ~ Gaussian, then mapped to non-negative domain
         std_A = torch.exp(0.5 * logvar_A)
         eps_A = torch.randn_like(std_A)
-        A = mu_A + std_A * eps_A
+        A_raw = mu_A + std_A * eps_A
+        A = F.softplus(A_raw) + 1e-8
 
         # Frequency w ~ Gaussian
         std_w = torch.exp(0.5 * logvar_w)

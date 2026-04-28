@@ -3,6 +3,7 @@ from typing import Dict, Sequence
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from loss import (
     compute_harmonic_elbo,
@@ -56,6 +57,7 @@ def evaluate_model(
     stats = {
         "loss": 0.0,
         "recon_btt_mse": 0.0,
+        "recon_btt_mse_det": 0.0,
         "total_kl": 0.0,
         "kl_A": 0.0,
         "kl_w": 0.0,
@@ -122,8 +124,12 @@ def evaluate_model(
             pred_freq_hz = mu_w / (2.0 * torch.pi)
             freq_mae = (pred_freq_hz - true_freqs[None, :]).abs().mean()
 
-            amp_rel_err = (mu_A - true_amps_norm[None, :]).abs() / (true_amps_norm[None, :].abs() + 1e-8)
+            # Keep evaluation amplitude definition consistent with decoder-side non-negative mapping.
+            amp_eval = F.softplus(mu_A) + 1e-8
+            amp_rel_err = (amp_eval - true_amps_norm[None, :]).abs() / (true_amps_norm[None, :].abs() + 1e-8)
             amp_mape = amp_rel_err.mean()
+            x_hat_det = model.decode(amp_eval, mu_w, mu_phi, t_local)
+            recon_det = _complex_ri_mse(x_hat_det, target_batch)
 
             t0 = t_batch[:, :1]
             phi_true_local = _wrap_to_pi(true_phases[None, :] + true_omega[None, :] * t0)
@@ -144,7 +150,7 @@ def evaluate_model(
                 amps=true_amps_norm,
                 phases=true_phases,
             )
-            x_dense_hat = model.decode(mu_A, mu_w, mu_phi, t_dense_local)
+            x_dense_hat = model.decode(amp_eval, mu_w, mu_phi, t_dense_local)
             x_dense_true_ri = torch.stack([x_dense_true.real, x_dense_true.imag], dim=-1)
             dense_mse = _complex_ri_mse(x_dense_hat, x_dense_true_ri)
 
@@ -158,6 +164,7 @@ def evaluate_model(
             total_samples += n
             stats["loss"] += loss.item() * n
             stats["recon_btt_mse"] += recon.item() * n
+            stats["recon_btt_mse_det"] += recon_det.item() * n
             stats["total_kl"] += total_kl.item() * n
             stats["kl_A"] += kl_A.item() * n
             stats["kl_w"] += kl_w.item() * n
@@ -177,4 +184,3 @@ def evaluate_model(
 
     stats["nan_or_inf_rate"] = bad_samples / total_samples
     return stats
-

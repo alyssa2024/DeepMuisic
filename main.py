@@ -1,9 +1,13 @@
 import os
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 import torch
 import numpy as np
 
-from dataset import BTTPatchDataset, build_btt_point_features
+from dataset import (
+    BTTPatchDataset,
+    build_btt_point_features,
+    chronological_train_val_split,
+)
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from VAE import PhysicalHarmonicVAE
 from loss import compute_harmonic_elbo
@@ -126,7 +130,6 @@ def main():
     eval_every = eval_cfg.get("eval_every", 10)
     dense_factor = eval_cfg.get("dense_factor", 4)
     target_recon = eval_cfg.get("target_recon_btt_mse", 0.1)
-    split_seed = eval_cfg.get("split_seed", 42)
     ckpt_cfg = CONFIG.get("checkpoint", {})
     ckpt_dir = ckpt_cfg.get("dir", "checkpoints")
     ckpt_save_every = ckpt_cfg.get("save_every", 10)
@@ -135,17 +138,9 @@ def main():
     if ckpt_save_every <= 0:
         raise ValueError(f"checkpoint.save_every must be > 0, got {ckpt_save_every}")
 
-    n_total = len(dataset)
-    n_val = max(1, int(round(n_total * val_ratio)))
-    n_train = max(1, n_total - n_val)
-    if n_train + n_val > n_total:
-        n_val = n_total - n_train
-
-    generator = torch.Generator().manual_seed(split_seed)
-    train_set, val_set = random_split(
+    train_set, val_set, split_info = chronological_train_val_split(
         dataset,
-        [n_train, n_val],
-        generator=generator,
+        val_ratio=val_ratio,
     )
 
     train_loader = DataLoader(
@@ -162,7 +157,13 @@ def main():
     )
 
     print(
-        f"Dataset split: total={n_total}, train={len(train_set)}, val={len(val_set)}, "
+        "Dataset split: "
+        f"total={split_info['n_total']}, "
+        f"train={split_info['n_train']}, "
+        f"val={split_info['n_val']}, "
+        f"gap_windows={split_info['gap_windows']}, "
+        f"train_end_idx={split_info['train_end_idx']}, "
+        f"val_start_idx={split_info['val_start_idx']}, "
         f"eval_every={eval_every}"
     )
 
@@ -269,6 +270,10 @@ def main():
                     f"kappa_mean={kappa_phi.mean().item():.4f}"
                 )
                 print("w_mean per harmonic:", mu_w.mean(dim=0).detach().cpu().numpy())
+                w_offset = mu_w - model.encoder.w_center[None, :]
+                w_ratio = w_offset / model.encoder.w_band
+                print("w_offset per harmonic:", w_offset.mean(dim=0).detach().cpu().numpy())
+                print("w_ratio per harmonic:", w_ratio.mean(dim=0).detach().cpu().numpy())
 
         need_eval = (
             epoch == 0
@@ -302,6 +307,7 @@ def main():
                 f"epoch={epoch:04d} "
                 f"loss={val_metrics['loss']:.6f} "
                 f"recon_btt_mse={val_metrics['recon_btt_mse']:.6f} "
+                f"recon_btt_mse_det={val_metrics['recon_btt_mse_det']:.6f} "
                 f"recon_dense_mse={val_metrics['recon_dense_mse']:.6f} "
                 f"freq_mae_hz={val_metrics['freq_mae_hz']:.4f} "
                 f"amp_mape={val_metrics['amp_mape']:.4f} "
