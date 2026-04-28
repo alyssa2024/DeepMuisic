@@ -1,7 +1,0 @@
-constant rotation speed for each resolution. Adding random fluctuation following the uniform distribution is not  as smooth as real data curve. could try AR model to simulate the rotation fluctuation.
-4 probes layout. According to CCS, the equivlent sampling
-
-VAE：1、合成数据集是复数，但观测数据是实数。目前打算实部和虚部分别送进去。到时候对观测数据进行希尔伯特变换。
-2、假设幅度、相位和频率互相独立
-3、时间嵌入：sinθ, cosθ + rev_norm + speed_norm + probe_emb。
-等跑通之后，再attention bias = f(Δθ, Δn)
