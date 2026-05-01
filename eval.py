@@ -7,7 +7,6 @@ import torch
 from loss import (
     compute_harmonic_elbo,
     frequency_kl_gaussian_to_maxwell,
-    gaussian_kl,
 )
 
 
@@ -51,12 +50,11 @@ def evaluate_model(
         "recon_btt_mse": 0.0,
         "recon_btt_mse_det": 0.0,
         "total_kl": 0.0,
-        "kl_amp_real": 0.0,
-        "kl_amp_imag": 0.0,
         "kl_w": 0.0,
         "freq_mae_hz": 0.0,
-        "amp_real_mape": 0.0,
-        "amp_imag_mape": 0.0,
+        "complex_coeff_rel_err": 0.0,
+        "amp_mape": 0.0,
+        "phase_circ_mae_rad": 0.0,
         "recon_dense_mse": 0.0,
         "patch_freq_std_hz": 0.0,
         "harmonic_order_consistency": 0.0,
@@ -75,36 +73,16 @@ def evaluate_model(
             t_local = t_batch - t_batch[:, :1]
 
             x_hat, dist_params = model(x_batch, t_local, probe_ids=probe_ids)
-            (mu_amp_real, logvar_amp_real), (mu_amp_imag, logvar_amp_imag), (mu_f, logvar_f) = dist_params
+            mu_f, logvar_f = dist_params
 
             loss, recon, total_kl = compute_harmonic_elbo(
                 x_target=target_batch,
                 x_hat=x_hat,
                 dist_params=dist_params,
                 beta=loss_cfg["beta"],
-                prior_amp_real_mu=loss_cfg["prior_amp_real_mu"],
-                prior_amp_real_var=loss_cfg["prior_amp_real_var"],
-                prior_amp_imag_mu=loss_cfg["prior_amp_imag_mu"],
-                prior_amp_imag_var=loss_cfg["prior_amp_imag_var"],
                 prior_a_w=prior_a_w,
-                use_kl_amp_real=loss_cfg["use_kl_amp_real"],
-                use_kl_amp_imag=loss_cfg["use_kl_amp_imag"],
                 use_kl_w=loss_cfg["use_kl_w"],
             )
-
-            kl_amp_real = gaussian_kl(
-                mu_amp_real,
-                logvar_amp_real,
-                prior_mu=loss_cfg["prior_amp_real_mu"],
-                prior_var=loss_cfg["prior_amp_real_var"],
-            ) if loss_cfg["use_kl_amp_real"] else torch.zeros((), device=device)
-
-            kl_amp_imag = gaussian_kl(
-                mu_amp_imag,
-                logvar_amp_imag,
-                prior_mu=loss_cfg["prior_amp_imag_mu"],
-                prior_var=loss_cfg["prior_amp_imag_var"],
-            ) if loss_cfg["use_kl_amp_imag"] else torch.zeros((), device=device)
 
             kl_w = frequency_kl_gaussian_to_maxwell(
                 mu_w=2.0 * torch.pi * mu_f,
@@ -116,11 +94,28 @@ def evaluate_model(
             pred_freq_hz = mu_f
             freq_mae = (pred_freq_hz - true_freqs[None, :]).abs().mean()
 
-            amp_real_rel_err = (mu_amp_real - true_amp_real_norm[None, :]).abs() / (true_amp_real_norm[None, :].abs() + 1e-8)
-            amp_imag_rel_err = (mu_amp_imag - true_amp_imag_norm[None, :]).abs() / (true_amp_imag_norm[None, :].abs() + 1e-8)
-            amp_real_mape = amp_real_rel_err.mean()
-            amp_imag_mape = amp_imag_rel_err.mean()
-            x_hat_det = model.decode(mu_amp_real, mu_amp_imag, mu_f, t_local)
+            y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
+            amp_real_ls, amp_imag_ls, _ = model.solve_amplitudes_ls(y_complex, mu_f, t_local)
+            c_true = torch.complex(true_amp_real_norm, true_amp_imag_norm)
+            c_hat = torch.complex(amp_real_ls, amp_imag_ls)
+            c_true_batch = c_true.unsqueeze(0)
+
+            complex_rel_err = torch.abs(c_hat - c_true_batch) / (torch.abs(c_true_batch) + 1e-8)
+            complex_coeff_rel_err = complex_rel_err.mean()
+
+            amp_true = torch.abs(c_true_batch)
+            amp_hat = torch.abs(c_hat)
+            amp_mape = (torch.abs(amp_hat - amp_true) / (amp_true + 1e-8)).mean()
+
+            phi_true = torch.angle(c_true_batch)
+            phi_hat = torch.angle(c_hat)
+            phase_err = torch.atan2(
+                torch.sin(phi_hat - phi_true),
+                torch.cos(phi_hat - phi_true),
+            ).abs()
+            phase_circ_mae_rad = phase_err.mean()
+
+            x_hat_det = model.decode(amp_real_ls, amp_imag_ls, mu_f, t_local)
             recon_det = _complex_ri_mse(x_hat_det, target_batch)
 
             batch_size, seq_len = t_batch.shape
@@ -137,19 +132,14 @@ def evaluate_model(
                 amp_real=true_amp_real_norm,
                 amp_imag=true_amp_imag_norm,
             )
-            x_dense_hat = model.decode(mu_amp_real, mu_amp_imag, mu_f, t_dense_local)
+            x_dense_hat = model.decode(amp_real_ls, amp_imag_ls, mu_f, t_dense_local)
             x_dense_true_ri = torch.stack([x_dense_true.real, x_dense_true.imag], dim=-1)
             dense_mse = _complex_ri_mse(x_dense_hat, x_dense_true_ri)
 
             patch_freq_std_hz = pred_freq_hz.std(dim=0, unbiased=False).mean()
             harmonic_order_ok = (pred_freq_hz[:, 1:] > pred_freq_hz[:, :-1]).float().mean()
 
-            finite_mask = (
-                torch.isfinite(mu_amp_real).all()
-                and torch.isfinite(mu_amp_imag).all()
-                and torch.isfinite(mu_f).all()
-                and torch.isfinite(loss)
-            )
+            finite_mask = torch.isfinite(mu_f).all() and torch.isfinite(loss)
             bad_samples += int(not finite_mask)
 
             n = batch_size
@@ -158,12 +148,11 @@ def evaluate_model(
             stats["recon_btt_mse"] += recon.item() * n
             stats["recon_btt_mse_det"] += recon_det.item() * n
             stats["total_kl"] += total_kl.item() * n
-            stats["kl_amp_real"] += kl_amp_real.item() * n
-            stats["kl_amp_imag"] += kl_amp_imag.item() * n
             stats["kl_w"] += kl_w.item() * n
             stats["freq_mae_hz"] += freq_mae.item() * n
-            stats["amp_real_mape"] += amp_real_mape.item() * n
-            stats["amp_imag_mape"] += amp_imag_mape.item() * n
+            stats["complex_coeff_rel_err"] += complex_coeff_rel_err.item() * n
+            stats["amp_mape"] += amp_mape.item() * n
+            stats["phase_circ_mae_rad"] += phase_circ_mae_rad.item() * n
             stats["recon_dense_mse"] += dense_mse.item() * n
             stats["patch_freq_std_hz"] += patch_freq_std_hz.item() * n
             stats["harmonic_order_consistency"] += harmonic_order_ok.item() * n

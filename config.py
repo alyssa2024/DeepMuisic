@@ -46,12 +46,6 @@ CONFIG = {
     },
     "loss": {
         "beta": 1e-5,
-        "prior_amp_real_mu": 0.0,
-        "prior_amp_real_var": 1.0,
-        "prior_amp_imag_mu": 0.0,
-        "prior_amp_imag_var": 1.0,
-        "use_kl_amp_real": True,
-        "use_kl_amp_imag": True,
         "use_kl_w": True,
     },
     "checkpoint": {
@@ -59,5 +53,12 @@ CONFIG = {
         "name": "latest.pt",
         "save_every": 20,
         "resume_from": None,  # Example: "checkpoints/latest.pt"
+    },
+    "logging": {
+        "enable_tensorboard": True,
+        "tensorboard_dir": "artifacts/tensorboard",
+        "save_curves": True,
+        "curve_dir": "artifacts/curves",
+        "curve_every": 1,
     },
 }

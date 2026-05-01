@@ -70,6 +70,7 @@ All experiment settings are centralized in `config.py`, including:
 - evaluation settings (`eval`)
 - loss priors/weights (`loss`)
 - checkpoint settings (`checkpoint`)
+- logging settings (`logging`)
 
 ## 5. Quick Start
 
@@ -95,6 +96,17 @@ python main.py
 5. run periodic validation via `evaluate_model()`,
 6. save checkpoints.
 
+Training also writes:
+
+- TensorBoard scalars to `artifacts/tensorboard` when `logging.enable_tensorboard=True`
+- PNG learning curves to `artifacts/curves` when `logging.save_curves=True`
+
+If TensorBoard is available in your environment, you can inspect logs with:
+
+```bash
+tensorboard --logdir artifacts/tensorboard
+```
+
 ### 5.3 Optional: Visualize Synthetic Data
 
 ```bash
@@ -109,8 +121,9 @@ python synthesis_dataset.py
 - `recon_btt_mse_det`
 - `recon_dense_mse`
 - `freq_mae_hz`
-- `amp_real_mape`
-- `amp_imag_mape`
+- `complex_coeff_rel_err`
+- `amp_mape`
+- `phase_circ_mae_rad`
 - `patch_freq_std_hz`
 - `harmonic_order_consistency`
 

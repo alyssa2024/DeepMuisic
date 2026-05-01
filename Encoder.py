@@ -75,15 +75,11 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         self._fc = torch.nn.Linear(hidden_dim, hidden_dim_dense)
 
-        self._fc_amp_real = torch.nn.Linear(hidden_dim_dense, 2 * self.num_harmonics)
-        self._fc_amp_imag = torch.nn.Linear(hidden_dim_dense, 2 * self.num_harmonics)
         self._fc_f_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
         self._fc_f_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
 
         self._device = device
         self._causal_mask = causal_mask
-        self._softplus = torch.nn.Softplus(beta=1.0)
-
         self.register_buffer(
             "f_center",
             torch.tensor(
@@ -131,24 +127,8 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         y = F.relu(self._fc(pooled))  # [B, hidden_dim_dense]
 
-        params_amp_real = self._fc_amp_real(y)
-        mu_amp_real = params_amp_real[..., : self.num_harmonics]
-        logvar_amp_real = torch.clamp(
-            params_amp_real[..., self.num_harmonics :],
-            min=-14.0,
-            max=4.0,
-        )
-
-        params_amp_imag = self._fc_amp_imag(y)
-        mu_amp_imag = params_amp_imag[..., : self.num_harmonics]
-        logvar_amp_imag = torch.clamp(
-            params_amp_imag[..., self.num_harmonics :],
-            min=-14.0,
-            max=4.0,
-        )
-
         raw_f_mu = self._fc_f_mu(y)
         mu_f = self.f_center + self.f_band * torch.tanh(raw_f_mu)
         logvar_f = torch.clamp(self._fc_f_logvar(y), min=-14.0, max=-6.0)
 
-        return (mu_amp_real, logvar_amp_real), (mu_amp_imag, logvar_amp_imag), (mu_f, logvar_f)
+        return (mu_f, logvar_f)
