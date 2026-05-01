@@ -151,14 +151,15 @@ def main():
             x_batch = x_batch.to(device)
             t_batch = t_batch.to(device)
             probe_ids_batch = probe_ids_batch.to(device)
-            target_batch = target_batch.to(device)
-            t_local = t_batch - t_batch[:, :1]
-            mu_f, _ = model.encoder(x_batch, probe_ids=probe_ids_batch)
-            y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
-            mu_amp_real, mu_amp_imag, _ = model.solve_amplitudes_ls(y_complex, mu_f, t_local)
-            mu_f_list.append(mu_f)
-            amp_real_list.append(mu_amp_real)
-            amp_imag_list.append(mu_amp_imag)
+            det_dist = model.infer_posteriors(
+                x_batch,
+                probe_ids=probe_ids_batch,
+                sample_f=False,
+                sample_a=False,
+            )
+            mu_f_list.append(det_dist["mu_f"])
+            amp_real_list.append(det_dist["mu_amp_real"])
+            amp_imag_list.append(det_dist["mu_amp_imag"])
 
     mu_f_all = torch.cat(mu_f_list, dim=0)
     amp_real_all = torch.cat(amp_real_list, dim=0)

@@ -50,6 +50,13 @@ def log_prob_gaussian(x, mu, logvar):
         + (x - mu) ** 2 / torch.exp(logvar)
     )
 
+
+def kl_gaussian_to_standard_normal(mu, logvar):
+    return 0.5 * torch.sum(
+        torch.exp(logvar) + mu ** 2 - 1.0 - logvar,
+        dim=-1,
+    ).mean()
+
 def log_prob_maxwell(w, a):
     """
     Maxwell-Boltzmann log probability.
@@ -123,6 +130,7 @@ def compute_harmonic_elbo(
     beta=1e-3,
     prior_a_w=1000.0,
     use_kl_w=True,
+    use_kl_a=True,
 ):
     """
     Negative ELBO loss.
@@ -131,13 +139,18 @@ def compute_harmonic_elbo(
         x_target: [B, L, 2]
         x_hat:    complex [B, L]
         dist_params:
-            (mu_f, logvar_f)
+            posterior parameter dict
 
     Returns:
         loss, recon_loss, total_kl
     """
 
-    mu_f, logvar_f = dist_params
+    mu_f = dist_params["mu_f"]
+    logvar_f = dist_params["logvar_f"]
+    mu_amp_real = dist_params["mu_amp_real"]
+    logvar_amp_real = dist_params["logvar_amp_real"]
+    mu_amp_imag = dist_params["mu_amp_imag"]
+    logvar_amp_imag = dist_params["logvar_amp_imag"]
 
     recon_loss = complex_mse_loss(x_hat, x_target)
 
@@ -155,7 +168,14 @@ def compute_harmonic_elbo(
     else:
         kl_w = torch.zeros((), dtype=mu_f.dtype, device=mu_f.device)
 
-    total_kl = kl_w
+    if use_kl_a:
+        kl_a_real = kl_gaussian_to_standard_normal(mu_amp_real, logvar_amp_real)
+        kl_a_imag = kl_gaussian_to_standard_normal(mu_amp_imag, logvar_amp_imag)
+    else:
+        kl_a_real = torch.zeros((), dtype=mu_f.dtype, device=mu_f.device)
+        kl_a_imag = torch.zeros((), dtype=mu_f.dtype, device=mu_f.device)
+
+    total_kl = kl_w + kl_a_real + kl_a_imag
 
     loss = recon_loss + beta * total_kl
 

@@ -77,6 +77,11 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         self._fc_f_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
         self._fc_f_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
+        self._fc_a = torch.nn.Linear(hidden_dim_dense + self.num_harmonics, hidden_dim_dense)
+        self._fc_a_real_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
+        self._fc_a_real_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
+        self._fc_a_imag_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
+        self._fc_a_imag_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
 
         self._device = device
         self._causal_mask = causal_mask
@@ -99,12 +104,11 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         mask = torch.eye(seq_len)
         return mask.masked_fill(mask == 1, float("-inf")).to(self._device)
 
-    def forward(self, x, probe_ids=None, Cws=None):
+    def encode_context(self, x, probe_ids=None):
         """
         x:        [B, L, input_dim]
         probe_ids:[B, L]
         """
-        batch_size = x.size(0)
         seq_len = x.size(1)
 
         x_transformer = self.input_proj(x)
@@ -124,11 +128,33 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         # Key step: mean pooling to produce one global latent per patch.
         pooled = x_transformer.mean(dim=1)  # [B, hidden_dim]
+        return F.relu(self._fc(pooled))  # [B, hidden_dim_dense]
 
-        y = F.relu(self._fc(pooled))  # [B, hidden_dim_dense]
-
-        raw_f_mu = self._fc_f_mu(y)
+    def infer_frequency_posterior(self, context):
+        raw_f_mu = self._fc_f_mu(context)
         mu_f = self.f_center + self.f_band * torch.tanh(raw_f_mu)
-        logvar_f = torch.clamp(self._fc_f_logvar(y), min=-14.0, max=-6.0)
+        logvar_f = torch.clamp(self._fc_f_logvar(context), min=-14.0, max=-6.0)
+        return mu_f, logvar_f
 
-        return (mu_f, logvar_f)
+    def infer_amplitude_posterior(self, context, f):
+        f_cond = (f - self.f_center.unsqueeze(0)) / self.f_band
+        amp_input = torch.cat([context, f_cond], dim=-1)
+        amp_hidden = F.relu(self._fc_a(amp_input))
+
+        mu_amp_real = self._fc_a_real_mu(amp_hidden)
+        logvar_amp_real = torch.clamp(
+            self._fc_a_real_logvar(amp_hidden),
+            min=-14.0,
+            max=-4.0,
+        )
+        mu_amp_imag = self._fc_a_imag_mu(amp_hidden)
+        logvar_amp_imag = torch.clamp(
+            self._fc_a_imag_logvar(amp_hidden),
+            min=-14.0,
+            max=-4.0,
+        )
+        return mu_amp_real, logvar_amp_real, mu_amp_imag, logvar_amp_imag
+
+    def forward(self, x, probe_ids=None, Cws=None):
+        context = self.encode_context(x, probe_ids=probe_ids)
+        return self.infer_frequency_posterior(context)

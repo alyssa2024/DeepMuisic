@@ -73,7 +73,8 @@ def evaluate_model(
             t_local = t_batch - t_batch[:, :1]
 
             x_hat, dist_params = model(x_batch, t_local, probe_ids=probe_ids)
-            mu_f, logvar_f = dist_params
+            mu_f = dist_params["mu_f"]
+            logvar_f = dist_params["logvar_f"]
 
             loss, recon, total_kl = compute_harmonic_elbo(
                 x_target=target_batch,
@@ -82,6 +83,7 @@ def evaluate_model(
                 beta=loss_cfg["beta"],
                 prior_a_w=prior_a_w,
                 use_kl_w=loss_cfg["use_kl_w"],
+                use_kl_a=loss_cfg.get("use_kl_a", True),
             )
 
             kl_w = frequency_kl_gaussian_to_maxwell(
@@ -94,10 +96,16 @@ def evaluate_model(
             pred_freq_hz = mu_f
             freq_mae = (pred_freq_hz - true_freqs[None, :]).abs().mean()
 
-            y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
-            amp_real_ls, amp_imag_ls, _ = model.solve_amplitudes_ls(y_complex, mu_f, t_local)
+            det_dist = model.infer_posteriors(
+                x_batch,
+                probe_ids=probe_ids,
+                sample_f=False,
+                sample_a=False,
+            )
+            amp_real_post = det_dist["mu_amp_real"]
+            amp_imag_post = det_dist["mu_amp_imag"]
             c_true = torch.complex(true_amp_real_norm, true_amp_imag_norm)
-            c_hat = torch.complex(amp_real_ls, amp_imag_ls)
+            c_hat = torch.complex(amp_real_post, amp_imag_post)
             c_true_batch = c_true.unsqueeze(0)
 
             complex_rel_err = torch.abs(c_hat - c_true_batch) / (torch.abs(c_true_batch) + 1e-8)
@@ -115,7 +123,7 @@ def evaluate_model(
             ).abs()
             phase_circ_mae_rad = phase_err.mean()
 
-            x_hat_det = model.decode(amp_real_ls, amp_imag_ls, mu_f, t_local)
+            x_hat_det = model.decode(amp_real_post, amp_imag_post, mu_f, t_local)
             recon_det = _complex_ri_mse(x_hat_det, target_batch)
 
             batch_size, seq_len = t_batch.shape
@@ -132,7 +140,7 @@ def evaluate_model(
                 amp_real=true_amp_real_norm,
                 amp_imag=true_amp_imag_norm,
             )
-            x_dense_hat = model.decode(amp_real_ls, amp_imag_ls, mu_f, t_dense_local)
+            x_dense_hat = model.decode(amp_real_post, amp_imag_post, mu_f, t_dense_local)
             x_dense_true_ri = torch.stack([x_dense_true.real, x_dense_true.imag], dim=-1)
             dense_mse = _complex_ri_mse(x_dense_hat, x_dense_true_ri)
 
