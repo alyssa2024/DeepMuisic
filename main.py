@@ -320,7 +320,6 @@ def main():
                     beta=loss_cfg["beta"],
                     prior_a_w=prior_a_w,
                     use_kl_w=loss_cfg["use_kl_w"],
-                    use_kl_a=loss_cfg.get("use_kl_a", True),
                 )
 
                 if not torch.isfinite(loss):
@@ -356,9 +355,7 @@ def main():
                 if last_dist_params is None:
                     print(f"epoch={epoch:04d} no valid training step (all batches non-finite or dropped).")
                 else:
-                    mu_f = last_dist_params["mu_f"]
-                    mu_amp_real = last_dist_params["mu_amp_real"]
-                    mu_amp_imag = last_dist_params["mu_amp_imag"]
+                    mu_f, _ = last_dist_params
                     train_loss_mean = train_loss_sum / max(train_batches, 1)
                     train_recon_mean = train_recon_sum / max(train_batches, 1)
                     train_kl_mean = train_kl_sum / max(train_batches, 1)
@@ -370,8 +367,6 @@ def main():
                     _log_scalar(writer, "train_epoch/recon", train_recon_mean, epoch + 1)
                     _log_scalar(writer, "train_epoch/kl", train_kl_mean, epoch + 1)
                     _log_scalar(writer, "train_epoch/f_mean", mu_f.mean().item(), epoch + 1)
-                    _log_scalar(writer, "train_epoch/amp_real_mean", mu_amp_real.mean().item(), epoch + 1)
-                    _log_scalar(writer, "train_epoch/amp_imag_mean", mu_amp_imag.mean().item(), epoch + 1)
 
                     print(
                         f"epoch={epoch:04d} "
@@ -381,8 +376,6 @@ def main():
                         f"f_mean={mu_f.mean().item():.4f}"
                     )
                     print("f_mean per harmonic:", mu_f.mean(dim=0).detach().cpu().numpy())
-                    print("amp_real_mean per harmonic:", mu_amp_real.mean(dim=0).detach().cpu().numpy())
-                    print("amp_imag_mean per harmonic:", mu_amp_imag.mean(dim=0).detach().cpu().numpy())
                     f_offset = mu_f - model.encoder.f_center[None, :]
                     f_ratio = f_offset / model.encoder.f_band
                     print("f_offset per harmonic:", f_offset.mean(dim=0).detach().cpu().numpy())

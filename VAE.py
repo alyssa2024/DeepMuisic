@@ -9,13 +9,17 @@ class PhysicalHarmonicVAE(nn.Module):
         self.num_harmonics = encoder.output_dim
         self.ls_ridge = ls_ridge
 
-    def reparameterize(self, mu, logvar, clamp_min=None):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        sample = mu + std * eps
-        if clamp_min is not None:
-            sample = torch.clamp(sample, min=clamp_min)
-        return sample
+    def reparameterize(self, mu_f, logvar_f):
+        """
+        Posterior over frequencies only:
+
+            q(z|x) = product_k q(f_k|x)
+        """
+
+        std_f = torch.exp(0.5 * logvar_f)
+        eps_f = torch.randn_like(std_f)
+        f = torch.clamp(mu_f + std_f * eps_f, min=1e-6)
+        return f
 
     def build_dictionary(self, f, t):
         """
@@ -85,29 +89,6 @@ class PhysicalHarmonicVAE(nn.Module):
         x_hat = (phi * complex_amp.unsqueeze(1)).sum(dim=-1)  # [B, L]
         return x_hat
 
-    def infer_posteriors(self, x, probe_ids=None, sample_f=True, sample_a=True):
-        context = self.encoder.encode_context(x, probe_ids=probe_ids)
-        mu_f, logvar_f = self.encoder.infer_frequency_posterior(context)
-        f = self.reparameterize(mu_f, logvar_f, clamp_min=1e-6) if sample_f else mu_f
-
-        mu_amp_real, logvar_amp_real, mu_amp_imag, logvar_amp_imag = (
-            self.encoder.infer_amplitude_posterior(context, f)
-        )
-        amp_real = self.reparameterize(mu_amp_real, logvar_amp_real) if sample_a else mu_amp_real
-        amp_imag = self.reparameterize(mu_amp_imag, logvar_amp_imag) if sample_a else mu_amp_imag
-
-        return {
-            "mu_f": mu_f,
-            "logvar_f": logvar_f,
-            "f": f,
-            "mu_amp_real": mu_amp_real,
-            "logvar_amp_real": logvar_amp_real,
-            "mu_amp_imag": mu_amp_imag,
-            "logvar_amp_imag": logvar_amp_imag,
-            "amp_real": amp_real,
-            "amp_imag": amp_imag,
-        }
-
     def forward(self, x, t, probe_ids=None):
         """
         Args:
@@ -117,18 +98,15 @@ class PhysicalHarmonicVAE(nn.Module):
 
         Returns:
             x_hat: complex [B, L]
-            dist_params: posterior parameter dict
+            dist_params:
+                (mu_f, logvar_f)
         """
-        dist_params = self.infer_posteriors(
-            x,
-            probe_ids=probe_ids,
-            sample_f=True,
-            sample_a=True,
-        )
-        x_hat = self.decode(
-            dist_params["amp_real"],
-            dist_params["amp_imag"],
-            dist_params["f"],
-            t,
-        )
-        return x_hat, dist_params
+
+        mu_f, logvar_f = self.encoder(x, probe_ids=probe_ids)
+        f = self.reparameterize(mu_f, logvar_f)
+
+        y_complex = torch.complex(x[..., 0], x[..., 1])
+        amp_real, amp_imag, _ = self.solve_amplitudes_ls(y_complex, f, t)
+        x_hat = self.decode(amp_real, amp_imag, f, t)
+
+        return x_hat, (mu_f, logvar_f)

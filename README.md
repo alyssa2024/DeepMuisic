@@ -28,13 +28,13 @@ DeepMuisic/
 
 - `Encoder.py`
   - `VariationalIndependentTimeSeriesTransformer`
-  - Encodes a patch sequence into a shared context, then outputs:
+  - Encodes a patch sequence and outputs posterior parameters:
+    - `q(a_real|x): mu_amp_real, logvar_amp_real`
+    - `q(a_imag|x): mu_amp_imag, logvar_amp_imag`
     - `q(f|x): mu_f, logvar_f`
-    - `q(a_real|x,f): mu_amp_real, logvar_amp_real`
-    - `q(a_imag|x,f): mu_amp_imag, logvar_amp_imag`
 - `VAE.py`
   - `PhysicalHarmonicVAE`
-  - Reparameterizes `f`, then predicts and samples amplitude posterior conditioned on `(x, f)`, and decodes with the fixed harmonic equation.
+  - Reparameterizes latent variables and decodes with the fixed harmonic equation (complex-valued output).
 - `loss.py`
   - `compute_harmonic_elbo()`
   - Reconstruction term (complex MSE over real/imag channels) + KL regularization terms.

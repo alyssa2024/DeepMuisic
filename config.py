@@ -47,7 +47,6 @@ CONFIG = {
     "loss": {
         "beta": 1e-5,
         "use_kl_w": True,
-        "use_kl_a": True,
     },
     "checkpoint": {
         "dir": "checkpoints",
