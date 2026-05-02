@@ -122,29 +122,6 @@ def _save_training_curves(history, output_dir):
     return True
 
 
-def amplitude_noise_scale_schedule(epoch: int, train_cfg: dict) -> float:
-    """
-    Linear schedule for amplitude posterior sampling strength.
-
-        c = mu_c + gamma * sigma_c * eps
-
-    gamma = 0.0: use posterior mean only.
-    gamma = 1.0: use full posterior sampling.
-    """
-    start_epoch = int(train_cfg.get("amp_sample_start_epoch", 0))
-    warmup_epochs = int(train_cfg.get("amp_sample_warmup_epochs", 0))
-
-    if warmup_epochs <= 0:
-        return 1.0
-
-    if epoch < start_epoch:
-        return 0.0
-
-    progress = (epoch - start_epoch + 1) / float(warmup_epochs)
-    gamma = max(0.0, min(1.0, progress))
-    return gamma
-
-
 def main():
     data_cfg = CONFIG["data"]
     signal_cfg = CONFIG["signal"]
@@ -312,8 +289,6 @@ def main():
     try:
         for epoch in range(start_epoch, train_cfg["epochs"]):
             model.train()
-            amp_noise_scale = amplitude_noise_scale_schedule(epoch, train_cfg)
-            sample_a = amp_noise_scale > 0.0
             last_dist_params = None
             last_loss = None
             last_recon = None
@@ -336,9 +311,6 @@ def main():
                     x_batch,
                     t_local,
                     probe_ids=probe_ids,
-                    sample_f=True,
-                    sample_a=sample_a,
-                    amp_noise_scale=amp_noise_scale,
                 )
 
                 loss, recon, kl = compute_harmonic_elbo(
@@ -377,7 +349,6 @@ def main():
                 _log_scalar(writer, "train_step/loss", loss.item(), total_steps)
                 _log_scalar(writer, "train_step/recon", recon.item(), total_steps)
                 _log_scalar(writer, "train_step/kl", kl.item(), total_steps)
-                _log_scalar(writer, "train_step/amp_noise_scale", amp_noise_scale, total_steps)
                 if torch.isfinite(grad_norm):
                     _log_scalar(writer, "train_step/grad_norm", grad_norm.item(), total_steps)
 
@@ -398,7 +369,6 @@ def main():
                     _log_scalar(writer, "train_epoch/loss", train_loss_mean, epoch + 1)
                     _log_scalar(writer, "train_epoch/recon", train_recon_mean, epoch + 1)
                     _log_scalar(writer, "train_epoch/kl", train_kl_mean, epoch + 1)
-                    _log_scalar(writer, "train_epoch/amp_noise_scale", amp_noise_scale, epoch + 1)
                     _log_scalar(writer, "train_epoch/f_mean", mu_f.mean().item(), epoch + 1)
                     _log_scalar(writer, "train_epoch/amp_real_mean", mu_amp_real.mean().item(), epoch + 1)
                     _log_scalar(writer, "train_epoch/amp_imag_mean", mu_amp_imag.mean().item(), epoch + 1)
@@ -408,9 +378,7 @@ def main():
                         f"train_loss={train_loss_mean:.6f} "
                         f"train_recon={train_recon_mean:.6f} "
                         f"train_kl={train_kl_mean:.6f} | "
-                        f"f_mean={mu_f.mean().item():.4f} "
-                        f"amp_noise_scale={amp_noise_scale:.4f} "
-                        f"sample_a={sample_a}"
+                        f"f_mean={mu_f.mean().item():.4f}"
                     )
                     print("f_mean per harmonic:", mu_f.mean(dim=0).detach().cpu().numpy())
                     print("amp_real_mean per harmonic:", mu_amp_real.mean(dim=0).detach().cpu().numpy())

@@ -9,21 +9,10 @@ class PhysicalHarmonicVAE(nn.Module):
         self.num_harmonics = encoder.output_dim
         self.ls_ridge = ls_ridge
 
-    def reparameterize(self, mu, logvar, clamp_min=None, noise_scale: float = 1.0):
-        """
-        Reparameterization with controllable sampling strength.
-
-            z = mu + noise_scale * std * eps
-
-        noise_scale = 0.0 gives posterior mean.
-        noise_scale = 1.0 gives standard posterior sampling.
-        """
-        if noise_scale <= 0.0:
-            sample = mu
-        else:
-            std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            sample = mu + noise_scale * std * eps
+    def reparameterize(self, mu, logvar, clamp_min=None):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        sample = mu + std * eps
         if clamp_min is not None:
             sample = torch.clamp(sample, min=clamp_min)
         return sample
@@ -96,40 +85,16 @@ class PhysicalHarmonicVAE(nn.Module):
         x_hat = (phi * complex_amp.unsqueeze(1)).sum(dim=-1)  # [B, L]
         return x_hat
 
-    def infer_posteriors(
-        self,
-        x,
-        probe_ids=None,
-        sample_f=True,
-        sample_a=True,
-        amp_noise_scale: float = 1.0,
-    ):
+    def infer_posteriors(self, x, probe_ids=None, sample_f=True, sample_a=True):
         context = self.encoder.encode_context(x, probe_ids=probe_ids)
         mu_f, logvar_f = self.encoder.infer_frequency_posterior(context)
-        f = self.reparameterize(
-            mu_f,
-            logvar_f,
-            clamp_min=1e-6,
-            noise_scale=1.0,
-        ) if sample_f else mu_f
+        f = self.reparameterize(mu_f, logvar_f, clamp_min=1e-6) if sample_f else mu_f
 
         mu_amp_real, logvar_amp_real, mu_amp_imag, logvar_amp_imag = (
             self.encoder.infer_amplitude_posterior(context, f)
         )
-        if sample_a:
-            amp_real = self.reparameterize(
-                mu_amp_real,
-                logvar_amp_real,
-                noise_scale=amp_noise_scale,
-            )
-            amp_imag = self.reparameterize(
-                mu_amp_imag,
-                logvar_amp_imag,
-                noise_scale=amp_noise_scale,
-            )
-        else:
-            amp_real = mu_amp_real
-            amp_imag = mu_amp_imag
+        amp_real = self.reparameterize(mu_amp_real, logvar_amp_real) if sample_a else mu_amp_real
+        amp_imag = self.reparameterize(mu_amp_imag, logvar_amp_imag) if sample_a else mu_amp_imag
 
         return {
             "mu_f": mu_f,
@@ -141,33 +106,14 @@ class PhysicalHarmonicVAE(nn.Module):
             "logvar_amp_imag": logvar_amp_imag,
             "amp_real": amp_real,
             "amp_imag": amp_imag,
-            "amp_noise_scale": torch.as_tensor(
-                amp_noise_scale,
-                dtype=mu_f.dtype,
-                device=mu_f.device,
-            ),
         }
 
-    def forward(
-        self,
-        x,
-        t,
-        probe_ids=None,
-        sample_f: bool = True,
-        sample_a: bool = True,
-        amp_noise_scale: float = 1.0,
-    ):
+    def forward(self, x, t, probe_ids=None):
         """
         Args:
             x:         [B, L, input_dim]
             t:         [B, L]
             probe_ids: [B, L]
-            sample_f:  whether to sample frequency posterior
-            sample_a:  whether to sample amplitude posterior
-            amp_noise_scale:
-                gamma in c = mu_c + gamma * sigma_c * eps.
-                gamma = 0.0 means posterior mean reconstruction.
-                gamma = 1.0 means standard posterior sampling.
 
         Returns:
             x_hat: complex [B, L]
@@ -176,9 +122,8 @@ class PhysicalHarmonicVAE(nn.Module):
         dist_params = self.infer_posteriors(
             x,
             probe_ids=probe_ids,
-            sample_f=sample_f,
-            sample_a=sample_a,
-            amp_noise_scale=amp_noise_scale,
+            sample_f=True,
+            sample_a=True,
         )
         x_hat = self.decode(
             dist_params["amp_real"],
