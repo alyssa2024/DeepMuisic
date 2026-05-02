@@ -36,8 +36,6 @@ CONFIG = {
         "epochs": 100,
         "lr": 1e-4,
         "max_grad_norm": 0.1,
-        "amp_sample_warmup_epochs": 30,
-        "amp_sample_start_epoch": 0,
     },
     "eval": {
         "val_ratio": 0.2,
