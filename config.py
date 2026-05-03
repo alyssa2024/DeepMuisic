@@ -31,6 +31,11 @@ CONFIG = {
         "dim_feedforward": 256,
         "hidden_dim_dense": 256,
         "use_standard_pe": False,
+        "ls_ridge": 1e-5,
+        "use_amp_residual": True,
+        "amp_residual_hidden": 128,
+        "amp_residual_gamma": 0.0,
+        "use_freq_mean_for_ls": True,
     },
     "training": {
         "epochs": 100,
@@ -47,6 +52,7 @@ CONFIG = {
     "loss": {
         "beta": 1e-5,
         "use_kl_w": True,
+        "residual_weight": 0.0,
     },
     "checkpoint": {
         "dir": "checkpoints",

@@ -123,6 +123,8 @@ def compute_harmonic_elbo(
     beta=1e-3,
     prior_a_w=1000.0,
     use_kl_w=True,
+    aux=None,
+    residual_weight=0.0,
 ):
     """
     Negative ELBO loss.
@@ -134,7 +136,7 @@ def compute_harmonic_elbo(
             (mu_f, logvar_f)
 
     Returns:
-        loss, recon_loss, total_kl
+        loss, recon_loss, total_kl, residual_loss
     """
 
     mu_f, logvar_f = dist_params
@@ -156,7 +158,11 @@ def compute_harmonic_elbo(
         kl_w = torch.zeros((), dtype=mu_f.dtype, device=mu_f.device)
 
     total_kl = kl_w
+    if aux is not None and residual_weight > 0.0:
+        residual_loss = aux["amp_residual_norm"]
+    else:
+        residual_loss = torch.zeros((), dtype=mu_f.dtype, device=mu_f.device)
 
-    loss = recon_loss + beta * total_kl
+    loss = recon_loss + beta * total_kl + residual_weight * residual_loss
 
-    return loss, recon_loss, total_kl
+    return loss, recon_loss, total_kl, residual_loss

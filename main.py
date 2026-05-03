@@ -149,7 +149,14 @@ def main():
         device=device,
     )
 
-    model = PhysicalHarmonicVAE(encoder).to(device)
+    model = PhysicalHarmonicVAE(
+        encoder,
+        ls_ridge=model_cfg.get("ls_ridge", 1e-6),
+        use_amp_residual=model_cfg.get("use_amp_residual", True),
+        amp_residual_hidden=model_cfg.get("amp_residual_hidden", 128),
+        amp_residual_gamma=model_cfg.get("amp_residual_gamma", 0.0),
+        use_freq_mean_for_ls=model_cfg.get("use_freq_mean_for_ls", True),
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg["lr"])
 
     t_samples, freqs_per_rev, rev_ids, probe_ids, theta_samples, freqs_at_samples = (
@@ -296,6 +303,9 @@ def main():
             train_loss_sum = 0.0
             train_recon_sum = 0.0
             train_kl_sum = 0.0
+            train_residual_sum = 0.0
+            train_residual_scaled_sum = 0.0
+            train_residual_rel_sum = 0.0
             train_batches = 0
 
             for x_batch, t_batch, probe_ids, rev_ids, target_batch in train_loader:
@@ -307,19 +317,26 @@ def main():
 
                 optimizer.zero_grad()
 
-                x_hat, dist_params = model(
+                model_out = model(
                     x_batch,
                     t_local,
                     probe_ids=probe_ids,
                 )
+                if len(model_out) == 3:
+                    x_hat, dist_params, aux = model_out
+                else:
+                    x_hat, dist_params = model_out
+                    aux = None
 
-                loss, recon, kl = compute_harmonic_elbo(
+                loss, recon, kl, residual_loss = compute_harmonic_elbo(
                     x_target=target_batch,
                     x_hat=x_hat,
                     dist_params=dist_params,
                     beta=loss_cfg["beta"],
                     prior_a_w=prior_a_w,
                     use_kl_w=loss_cfg["use_kl_w"],
+                    aux=aux,
+                    residual_weight=loss_cfg.get("residual_weight", 0.0),
                 )
 
                 if not torch.isfinite(loss):
@@ -343,11 +360,34 @@ def main():
                 train_loss_sum += loss.item()
                 train_recon_sum += recon.item()
                 train_kl_sum += kl.item()
+                if aux is not None:
+                    train_residual_sum += aux["amp_residual_norm"].item()
+                    train_residual_scaled_sum += aux["amp_residual_scaled_norm"].item()
+                    train_residual_rel_sum += aux["amp_residual_rel"].item()
                 train_batches += 1
 
                 _log_scalar(writer, "train_step/loss", loss.item(), total_steps)
                 _log_scalar(writer, "train_step/recon", recon.item(), total_steps)
                 _log_scalar(writer, "train_step/kl", kl.item(), total_steps)
+                if aux is not None:
+                    _log_scalar(
+                        writer,
+                        "train_step/amp_residual_norm",
+                        aux["amp_residual_norm"].item(),
+                        total_steps,
+                    )
+                    _log_scalar(
+                        writer,
+                        "train_step/amp_residual_scaled_norm",
+                        aux["amp_residual_scaled_norm"].item(),
+                        total_steps,
+                    )
+                    _log_scalar(
+                        writer,
+                        "train_step/amp_residual_rel",
+                        aux["amp_residual_rel"].item(),
+                        total_steps,
+                    )
                 if torch.isfinite(grad_norm):
                     _log_scalar(writer, "train_step/grad_norm", grad_norm.item(), total_steps)
 
@@ -359,20 +399,32 @@ def main():
                     train_loss_mean = train_loss_sum / max(train_batches, 1)
                     train_recon_mean = train_recon_sum / max(train_batches, 1)
                     train_kl_mean = train_kl_sum / max(train_batches, 1)
+                    train_residual_mean = train_residual_sum / max(train_batches, 1)
+                    train_residual_scaled_mean = train_residual_scaled_sum / max(train_batches, 1)
+                    train_residual_rel_mean = train_residual_rel_sum / max(train_batches, 1)
 
                     _append_history(history, "train/loss", epoch + 1, train_loss_mean)
                     _append_history(history, "train/recon", epoch + 1, train_recon_mean)
                     _append_history(history, "train/kl", epoch + 1, train_kl_mean)
+                    _append_history(history, "train/amp_residual_norm", epoch + 1, train_residual_mean)
+                    _append_history(history, "train/amp_residual_scaled_norm", epoch + 1, train_residual_scaled_mean)
+                    _append_history(history, "train/amp_residual_rel", epoch + 1, train_residual_rel_mean)
                     _log_scalar(writer, "train_epoch/loss", train_loss_mean, epoch + 1)
                     _log_scalar(writer, "train_epoch/recon", train_recon_mean, epoch + 1)
                     _log_scalar(writer, "train_epoch/kl", train_kl_mean, epoch + 1)
+                    _log_scalar(writer, "train_epoch/amp_residual_norm", train_residual_mean, epoch + 1)
+                    _log_scalar(writer, "train_epoch/amp_residual_scaled_norm", train_residual_scaled_mean, epoch + 1)
+                    _log_scalar(writer, "train_epoch/amp_residual_rel", train_residual_rel_mean, epoch + 1)
                     _log_scalar(writer, "train_epoch/f_mean", mu_f.mean().item(), epoch + 1)
 
                     print(
                         f"epoch={epoch:04d} "
                         f"train_loss={train_loss_mean:.6f} "
                         f"train_recon={train_recon_mean:.6f} "
-                        f"train_kl={train_kl_mean:.6f} | "
+                        f"train_kl={train_kl_mean:.6f} "
+                        f"res_norm={train_residual_mean:.6e} "
+                        f"res_scaled={train_residual_scaled_mean:.6e} "
+                        f"res_rel={train_residual_rel_mean:.6e} | "
                         f"f_mean={mu_f.mean().item():.4f}"
                     )
                     print("f_mean per harmonic:", mu_f.mean(dim=0).detach().cpu().numpy())
@@ -426,12 +478,26 @@ def main():
                     f"epoch={epoch:04d} "
                     f"loss={val_metrics['loss']:.6f} "
                     f"recon_btt_mse={val_metrics['recon_btt_mse']:.6f} "
-                    f"recon_btt_mse_det={val_metrics['recon_btt_mse_det']:.6f} "
+                    f"recon_btt_mse_model={val_metrics.get('recon_btt_mse_model', -1.0):.6f} "
+                    f"recon_btt_mse_ls={val_metrics.get('recon_btt_mse_ls', -1.0):.6f} "
                     f"recon_dense_mse={val_metrics['recon_dense_mse']:.6f} "
+                    f"recon_dense_mse_model={val_metrics.get('recon_dense_mse_model', -1.0):.6f} "
+                    f"recon_dense_mse_ls={val_metrics.get('recon_dense_mse_ls', -1.0):.6f} "
                     f"freq_mae_hz={val_metrics['freq_mae_hz']:.4f} "
                     f"complex_coeff_rel_err={val_metrics['complex_coeff_rel_err']:.4f} "
+                    f"complex_model_local={val_metrics.get('complex_coeff_rel_err_model_local', -1.0):.4f} "
+                    f"complex_ls_local={val_metrics.get('complex_coeff_rel_err_ls_local', -1.0):.4f} "
+                    f"complex_coeff_rel_err_global={val_metrics.get('complex_coeff_rel_err_global', -1.0):.4f} "
+                    f"complex_coeff_rel_err_local={val_metrics.get('complex_coeff_rel_err_local', -1.0):.4f} "
                     f"amp_mape={val_metrics['amp_mape']:.4f} "
                     f"phase_circ_mae_rad={val_metrics['phase_circ_mae_rad']:.4f} "
+                    f"phase_model_local={val_metrics.get('phase_circ_mae_rad_model_local', -1.0):.4f} "
+                    f"phase_ls_local={val_metrics.get('phase_circ_mae_rad_ls_local', -1.0):.4f} "
+                    f"phase_global={val_metrics.get('phase_circ_mae_rad_global', -1.0):.4f} "
+                    f"phase_local={val_metrics.get('phase_circ_mae_rad_local', -1.0):.4f} "
+                    f"eval_res_rel={val_metrics.get('eval_amp_residual_rel', -1.0):.6e} "
+                    f"model_vs_ls_coeff_rel={val_metrics.get('model_vs_ls_coeff_rel', -1.0):.6e} "
+                    f"model_vs_ls_recon_btt_mse={val_metrics.get('model_vs_ls_recon_btt_mse', -1.0):.6e} "
                     f"total_kl={val_metrics['total_kl']:.6f} "
                     f"kl_w={val_metrics['kl_w']:.6f} "
                     f"patch_freq_std_hz={val_metrics['patch_freq_std_hz']:.4f} "
