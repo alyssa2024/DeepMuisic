@@ -79,7 +79,7 @@ K_CONFIGS = {
 
 def build_experiment_grid(experiment, base_cfg):
     if experiment == "exp1_snr":
-        values = [-10, -5, 0, 5, 10, 15, 20]
+        values = base_cfg.get("experiment", {}).get("snr_values", [-5, 0, 5, 10, 15, 20])
         return [("snr_db", v, {"signal": {"snr_db": v}}) for v in values]
 
     if experiment == "exp2_n_revs":
@@ -147,6 +147,14 @@ def run_grid(args):
     result_root.mkdir(parents=True, exist_ok=True)
 
     base_cfg = copy.deepcopy(CONFIG)
+    base_cfg.setdefault("training", {})
+    base_cfg["training"]["early_stopping"] = {
+        "enabled": True,
+        "monitor": "freq_rmse_hz",
+        "mode": "min",
+        "patience": 3,
+        "min_delta": 0.0,
+    }
     base_cfg.setdefault("loss", {})
     base_cfg["loss"]["freq_success_tol_hz"] = args.freq_tol_hz
     base_cfg["loss"]["amp_success_tol_m"] = args.amp_tol_m
@@ -154,9 +162,18 @@ def run_grid(args):
     base_cfg.setdefault("prior", {})
     base_cfg["prior"].setdefault("f_center_hz", base_cfg["signal"]["freqs_hz"])
     base_cfg["prior"].setdefault("f_band_hz", 15.0)
+    if args.pure_ls:
+        base_cfg.setdefault("model", {})
+        base_cfg.setdefault("loss", {})
+        base_cfg["model"]["use_amp_residual"] = False
+        base_cfg["model"]["amp_residual_gamma"] = 0.0
+        base_cfg["loss"]["residual_weight"] = 0.0
 
     grid = build_experiment_grid(args.experiment, base_cfg)
-    seeds = [int(s) for s in args.seeds.split(",")]
+    if args.seeds:
+        seeds = [int(s) for s in args.seeds.split(",")]
+    else:
+        seeds = [int(s) for s in base_cfg.get("experiment", {}).get("seeds", [0])]
 
     for factor_name, factor_value, overrides in grid:
         for seed in seeds:
@@ -201,9 +218,10 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--experiment", type=str, required=True)
     parser.add_argument("--result_root", type=str, default="/content/drive/MyDrive/deepmusic_results/v3")
-    parser.add_argument("--seeds", type=str, default="0,1,2")
+    parser.add_argument("--seeds", type=str, default=None)
     parser.add_argument("--freq_tol_hz", type=float, default=1.0)
     parser.add_argument("--amp_tol_m", type=float, default=1e-4)
+    parser.add_argument("--pure_ls", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     run_grid(args)

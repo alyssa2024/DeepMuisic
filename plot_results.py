@@ -18,7 +18,7 @@ def parse_factor_dir(s):
     return name, value
 
 
-def collect_results(result_root):
+def collect_results(result_root, metric_source="last"):
     result_root = Path(result_root)
     rows = []
 
@@ -50,7 +50,23 @@ def collect_results(result_root):
             "seed_dir": seed_dir,
             "run_dir": str(run_dir),
         }
-        row.update(metrics)
+        if metric_source == "best" and isinstance(metrics.get("best_metrics"), dict):
+            row.update(metrics["best_metrics"])
+            # Keep summary metadata from the top-level payload for reference.
+            for k in (
+                "best_epoch_by_freq_rmse",
+                "best_freq_rmse_hz",
+                "last_freq_rmse_hz",
+                "freq_rmse_degradation_ratio",
+                "early_stopped",
+                "early_stop_epoch",
+                "early_stopping_patience",
+                "early_stopping_monitor",
+            ):
+                if k in metrics:
+                    row[k] = metrics[k]
+        else:
+            row.update(metrics)
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -108,16 +124,17 @@ def plot_metric(df, experiment, metric, ylabel, out_dir):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--result_root", type=str, default="/content/drive/MyDrive/deepmusic_results/v3")
+    parser.add_argument("--metric_source", type=str, choices=["last", "best"], default="last")
     args = parser.parse_args()
 
     result_root = Path(args.result_root)
-    df = collect_results(result_root)
+    df = collect_results(result_root, metric_source=args.metric_source)
 
     if df.empty:
         print("[WARN] No metrics.json found.")
         return
 
-    csv_path = result_root / "all_results.csv"
+    csv_path = result_root / f"all_results_{args.metric_source}.csv"
     df.to_csv(csv_path, index=False)
     print(f"[SAVE] {csv_path}")
 
