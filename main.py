@@ -1,4 +1,5 @@
 import os
+import json
 from torch.utils.data import DataLoader
 import torch
 import numpy as np
@@ -89,7 +90,8 @@ def _save_training_curves(history, output_dir):
             ("eval/recon_dense_mse", "recon_dense_mse"),
         ],
         "eval_harmonics.png": [
-            ("eval/freq_mae_hz", "freq_mae_hz"),
+            ("eval/freq_rmse_hz", "freq_rmse_hz"),
+            ("eval/detection_success_rate", "detection_success_rate"),
             ("eval/amp_mape", "amp_mape"),
             ("eval/phase_circ_mae_rad", "phase_circ_mae_rad"),
         ],
@@ -128,7 +130,11 @@ def main():
     model_cfg = CONFIG["model"]
     train_cfg = CONFIG["training"]
     loss_cfg = CONFIG["loss"]
+    prior_cfg = CONFIG.get("prior", {})
     seed = CONFIG.get("seed", 42)
+    run_dir = CONFIG.get("run_dir", ".")
+    os.makedirs(run_dir, exist_ok=True)
+    final_metrics = None
     set_global_seed(seed)
 
     prior_a_w = build_prior_a_w(signal_cfg["freqs_hz"])
@@ -147,6 +153,8 @@ def main():
         num_probes=data_cfg["num_probes"],
         use_standard_pe=model_cfg["use_standard_pe"],
         device=device,
+        f_center_hz=prior_cfg.get("f_center_hz", signal_cfg["freqs_hz"]),
+        f_band_hz=prior_cfg.get("f_band_hz", 15.0),
     )
 
     model = PhysicalHarmonicVAE(
@@ -454,6 +462,11 @@ def main():
 
                 if epoch_to_target is None and val_metrics["recon_btt_mse"] <= target_recon:
                     epoch_to_target = epoch + 1
+                final_metrics = dict(val_metrics)
+                final_metrics["epoch"] = epoch + 1
+                final_metrics["total_steps"] = total_steps
+                final_metrics["seed"] = seed
+                final_metrics["epoch_to_target"] = epoch_to_target
 
                 grad_clip_ratio = (
                     grad_clip_triggered_steps / max(total_steps, 1)
@@ -483,7 +496,8 @@ def main():
                     f"recon_dense_mse={val_metrics['recon_dense_mse']:.6f} "
                     f"recon_dense_mse_model={val_metrics.get('recon_dense_mse_model', -1.0):.6f} "
                     f"recon_dense_mse_ls={val_metrics.get('recon_dense_mse_ls', -1.0):.6f} "
-                    f"freq_mae_hz={val_metrics['freq_mae_hz']:.4f} "
+                    f"freq_rmse_hz={val_metrics['freq_rmse_hz']:.4f} "
+                    f"detection_success_rate={val_metrics['detection_success_rate']:.4f} "
                     f"complex_coeff_rel_err={val_metrics['complex_coeff_rel_err']:.4f} "
                     f"complex_model_local={val_metrics.get('complex_coeff_rel_err_model_local', -1.0):.4f} "
                     f"complex_ls_local={val_metrics.get('complex_coeff_rel_err_ls_local', -1.0):.4f} "
@@ -512,6 +526,11 @@ def main():
                     curves_saved = _save_training_curves(history, curve_dir)
                     if curves_saved:
                         print(f"Updated curve images in: {curve_dir}")
+
+                metrics_path = os.path.join(run_dir, "metrics.json")
+                with open(metrics_path, "w", encoding="utf-8") as f:
+                    json.dump(final_metrics, f, indent=2)
+                print(f"Saved metrics: {metrics_path}")
 
             should_save_ckpt = (
                 (epoch + 1) % ckpt_save_every == 0
@@ -542,6 +561,11 @@ def main():
                 )
                 print(f"Saved checkpoint: {latest_ckpt}")
     finally:
+        if final_metrics is not None:
+            metrics_path = os.path.join(run_dir, "metrics.json")
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(final_metrics, f, indent=2)
+            print(f"Saved final metrics: {metrics_path}")
         if writer is not None:
             writer.close()
 

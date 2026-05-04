@@ -41,6 +41,8 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         use_standard_pe=False,
         causal_mask=False,
         device="cpu",
+        f_center_hz=None,
+        f_band_hz=15.0,
         **kwargs,
     ):
         super().__init__()
@@ -80,15 +82,17 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         self._device = device
         self._causal_mask = causal_mask
+        if f_center_hz is None:
+            f_center_hz = [167.0, 341.0, 635.0, 872.0]
+        if len(f_center_hz) != output_dim:
+            raise ValueError(
+                f"len(f_center_hz)={len(f_center_hz)} must equal output_dim={output_dim}"
+            )
         self.register_buffer(
             "f_center",
-            torch.tensor(
-                [167.0, 341.0, 635.0, 872.0],
-                dtype=torch.float32,
-            ),
+            torch.tensor(f_center_hz, dtype=torch.float32),
         )
-
-        self.f_band = 15.0
+        self.f_band = float(f_band_hz)
 
     def generate_causal_mask(self, seq_len):
         # Upper triangular mask: (seq_len, seq_len)

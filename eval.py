@@ -94,7 +94,8 @@ def evaluate_model(
         "recon_btt_mse_ls": 0.0,
         "total_kl": 0.0,
         "kl_w": 0.0,
-        "freq_mae_hz": 0.0,
+        "freq_rmse_hz": 0.0,
+        "detection_success_rate": 0.0,
         "complex_coeff_rel_err": 0.0,
         "amp_mape": 0.0,
         "phase_circ_mae_rad": 0.0,
@@ -160,7 +161,9 @@ def evaluate_model(
             ) if loss_cfg["use_kl_w"] else torch.zeros((), device=device)
 
             pred_freq_hz = mu_f
-            freq_mae = (pred_freq_hz - true_freqs[None, :]).abs().mean()
+            freq_err = pred_freq_hz - true_freqs[None, :]
+            freq_abs_err = freq_err.abs()
+            freq_rmse = torch.sqrt(torch.mean(freq_err ** 2))
 
             y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
 
@@ -177,6 +180,7 @@ def evaluate_model(
                 f_model = mu_f
 
             c_hat_model = torch.complex(amp_real_model, amp_imag_model)
+            c_hat_model_m = c_hat_model * (amp_scale + 1e-12)
 
             c_true_global = torch.complex(true_amp_real_norm, true_amp_imag_norm)
             c_true_global_batch = c_true_global.unsqueeze(0).expand_as(c_hat_ls)
@@ -185,6 +189,16 @@ def evaluate_model(
                 true_freq_hz=true_freqs,
                 t0=t0,
             )
+            c_true_local_batch_m = c_true_local_batch * (amp_scale + 1e-12)
+
+            # Detection success criterion:
+            # each harmonic must satisfy both frequency and amplitude thresholds.
+            freq_tol_hz = float(loss_cfg.get("freq_success_tol_hz", 1.0))
+            amp_tol_m = float(loss_cfg.get("amp_success_tol_m", 1e-4))  # 0.1 mm
+            amp_abs_err_m = torch.abs(torch.abs(c_hat_model_m) - torch.abs(c_true_local_batch_m))
+            success_per_harmonic = (freq_abs_err <= freq_tol_hz) & (amp_abs_err_m <= amp_tol_m)
+            success_per_patch = torch.all(success_per_harmonic, dim=1).float()
+            detection_success_rate = success_per_patch.mean()
 
             complex_coeff_rel_err_global = _complex_coeff_rel_err(c_hat_ls, c_true_global_batch)
             phase_circ_mae_rad_global = _circular_phase_mae(c_hat_ls, c_true_global_batch)
@@ -258,7 +272,8 @@ def evaluate_model(
             stats["recon_btt_mse_ls"] += recon_btt_mse_ls.item() * n
             stats["total_kl"] += total_kl.item() * n
             stats["kl_w"] += kl_w.item() * n
-            stats["freq_mae_hz"] += freq_mae.item() * n
+            stats["freq_rmse_hz"] += freq_rmse.item() * n
+            stats["detection_success_rate"] += detection_success_rate.item() * n
             stats["complex_coeff_rel_err"] += complex_coeff_rel_err.item() * n
             stats["complex_coeff_rel_err_ls_local"] += complex_coeff_rel_err_ls_local.item() * n
             stats["complex_coeff_rel_err_model_local"] += complex_coeff_rel_err_model_local.item() * n
