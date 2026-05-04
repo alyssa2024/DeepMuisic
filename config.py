@@ -35,12 +35,19 @@ CONFIG = {
         "use_amp_residual": True,
         "amp_residual_hidden": 128,
         "amp_residual_gamma": 0.0,
-        "use_freq_mean_for_ls": True,
+        "use_freq_mean_for_ls": False,
     },
     "training": {
-        "epochs": 100,
+        "epochs": 50,
         "lr": 1e-4,
         "max_grad_norm": 0.1,
+        "early_stopping": {
+            "enabled": True,
+            "monitor": "freq_rmse_hz",
+            "mode": "min",
+            "patience": 3,
+            "min_delta": 0.0,
+        },
     },
     "eval": {
         "val_ratio": 0.2,
@@ -72,5 +79,9 @@ CONFIG = {
         "save_curves": True,
         "curve_dir": "artifacts/curves",
         "curve_every": 1,
+    },
+    "experiment": {
+        "snr_values": [-5, 0, 5, 10, 15, 20],
+        "seeds": [0],
     },
 }

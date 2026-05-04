@@ -124,6 +124,45 @@ def _save_training_curves(history, output_dir):
     return True
 
 
+def _build_metrics_payload(
+    last_metrics,
+    best_metrics,
+    best_epoch,
+    early_stopped,
+    early_stop_epoch,
+    early_patience,
+    early_monitor,
+):
+    if last_metrics is None:
+        return None
+
+    payload = dict(last_metrics)
+    payload["last_metrics"] = dict(last_metrics)
+    payload["best_metrics"] = dict(best_metrics) if best_metrics is not None else None
+    payload["best_epoch_by_freq_rmse"] = best_epoch
+    payload["best_freq_rmse_hz"] = (
+        best_metrics.get("freq_rmse_hz") if best_metrics is not None else None
+    )
+    payload["last_freq_rmse_hz"] = last_metrics.get("freq_rmse_hz")
+
+    if (
+        best_metrics is not None
+        and best_metrics.get("freq_rmse_hz") is not None
+        and best_metrics["freq_rmse_hz"] > 0
+    ):
+        payload["freq_rmse_degradation_ratio"] = (
+            last_metrics.get("freq_rmse_hz", 0.0) / best_metrics["freq_rmse_hz"]
+        )
+    else:
+        payload["freq_rmse_degradation_ratio"] = None
+
+    payload["early_stopped"] = bool(early_stopped)
+    payload["early_stop_epoch"] = early_stop_epoch
+    payload["early_stopping_patience"] = int(early_patience)
+    payload["early_stopping_monitor"] = str(early_monitor)
+    return payload
+
+
 def main():
     data_cfg = CONFIG["data"]
     signal_cfg = CONFIG["signal"]
@@ -135,6 +174,8 @@ def main():
     run_dir = CONFIG.get("run_dir", ".")
     os.makedirs(run_dir, exist_ok=True)
     final_metrics = None
+    best_metrics = None
+    best_epoch = None
     set_global_seed(seed)
 
     prior_a_w = build_prior_a_w(signal_cfg["freqs_hz"])
@@ -213,6 +254,18 @@ def main():
     eval_every = eval_cfg.get("eval_every", 10)
     dense_factor = eval_cfg.get("dense_factor", 4)
     target_recon = eval_cfg.get("target_recon_btt_mse", 0.1)
+    early_cfg = train_cfg.get("early_stopping", {})
+    early_enabled = early_cfg.get("enabled", True)
+    early_monitor = early_cfg.get("monitor", "freq_rmse_hz")
+    early_patience = int(early_cfg.get("patience", 3))
+    early_min_delta = float(early_cfg.get("min_delta", 0.0))
+    early_mode = early_cfg.get("mode", "min")
+    if early_mode not in ("min", "max"):
+        raise ValueError(f"Unsupported early_stopping.mode={early_mode}, expected 'min' or 'max'.")
+    best_monitor_value = float("inf") if early_mode == "min" else -float("inf")
+    epochs_without_improvement = 0
+    early_stopped = False
+    early_stop_epoch = None
     ckpt_cfg = CONFIG.get("checkpoint", {})
     log_cfg = CONFIG.get("logging", {})
     ckpt_dir = ckpt_cfg.get("dir", "checkpoints")
@@ -468,6 +521,32 @@ def main():
                 final_metrics["seed"] = seed
                 final_metrics["epoch_to_target"] = epoch_to_target
 
+                monitor_value = float(val_metrics[early_monitor])
+                if early_mode == "min":
+                    improved = monitor_value < (best_monitor_value - early_min_delta)
+                else:
+                    improved = monitor_value > (best_monitor_value + early_min_delta)
+
+                if improved:
+                    best_monitor_value = monitor_value
+                    best_metrics = dict(final_metrics)
+                    best_epoch = epoch + 1
+                    epochs_without_improvement = 0
+                    best_ckpt = os.path.join(ckpt_dir, "best_freq_rmse.pt")
+                    save_checkpoint(
+                        path=best_ckpt,
+                        model=model,
+                        optimizer=optimizer,
+                        epoch=epoch,
+                        total_steps=total_steps,
+                        nonfinite_steps=nonfinite_steps,
+                        grad_clip_triggered_steps=grad_clip_triggered_steps,
+                        epoch_to_target=epoch_to_target,
+                    )
+                    print(f"Saved best checkpoint by {early_monitor}: {best_ckpt}")
+                else:
+                    epochs_without_improvement += 1
+
                 grad_clip_ratio = (
                     grad_clip_triggered_steps / max(total_steps, 1)
                 )
@@ -528,9 +607,27 @@ def main():
                         print(f"Updated curve images in: {curve_dir}")
 
                 metrics_path = os.path.join(run_dir, "metrics.json")
+                metrics_to_save = _build_metrics_payload(
+                    last_metrics=final_metrics,
+                    best_metrics=best_metrics,
+                    best_epoch=best_epoch,
+                    early_stopped=early_stopped,
+                    early_stop_epoch=early_stop_epoch,
+                    early_patience=early_patience,
+                    early_monitor=early_monitor,
+                )
                 with open(metrics_path, "w", encoding="utf-8") as f:
-                    json.dump(final_metrics, f, indent=2)
+                    json.dump(metrics_to_save, f, indent=2)
                 print(f"Saved metrics: {metrics_path}")
+
+                if early_enabled and epochs_without_improvement >= early_patience:
+                    early_stopped = True
+                    early_stop_epoch = epoch + 1
+                    print(
+                        f"Early stopping triggered at epoch {epoch + 1}: "
+                        f"{early_monitor} did not improve for {early_patience} eval checks."
+                    )
+                    break
 
             should_save_ckpt = (
                 (epoch + 1) % ckpt_save_every == 0
@@ -563,8 +660,17 @@ def main():
     finally:
         if final_metrics is not None:
             metrics_path = os.path.join(run_dir, "metrics.json")
+            metrics_to_save = _build_metrics_payload(
+                last_metrics=final_metrics,
+                best_metrics=best_metrics,
+                best_epoch=best_epoch,
+                early_stopped=early_stopped,
+                early_stop_epoch=early_stop_epoch,
+                early_patience=early_patience,
+                early_monitor=early_monitor,
+            )
             with open(metrics_path, "w", encoding="utf-8") as f:
-                json.dump(final_metrics, f, indent=2)
+                json.dump(metrics_to_save, f, indent=2)
             print(f"Saved final metrics: {metrics_path}")
         if writer is not None:
             writer.close()

@@ -79,11 +79,11 @@ K_CONFIGS = {
 
 def build_experiment_grid(experiment, base_cfg):
     if experiment == "exp1_snr":
-        values = [-20, -15, -10, -5, 0, 5, 10, 15, 20, 30]
+        values = [-10, -5, 0, 5, 10, 15, 20]
         return [("snr_db", v, {"signal": {"snr_db": v}}) for v in values]
 
     if experiment == "exp2_n_revs":
-        values = [1000, 2000, 5000, 10000, 20000, 40000]
+        values = [2000, 5000, 10000, 20000, 40000]
         return [("n_revs", v, {"data": {"n_revs": v}}) for v in values]
 
     if experiment == "exp3a_window_revs":

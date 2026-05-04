@@ -95,6 +95,9 @@ def evaluate_model(
         "total_kl": 0.0,
         "kl_w": 0.0,
         "freq_rmse_hz": 0.0,
+        "freq_success_rate": 0.0,
+        "amp_success_rate": 0.0,
+        "joint_success_rate": 0.0,
         "detection_success_rate": 0.0,
         "complex_coeff_rel_err": 0.0,
         "amp_mape": 0.0,
@@ -121,6 +124,10 @@ def evaluate_model(
         "harmonic_order_consistency": 0.0,
         "nan_or_inf_rate": 0.0,
     }
+    num_harmonics = len(true_freqs_hz)
+    for h in range(num_harmonics):
+        stats[f"freq_success_h{h + 1}"] = 0.0
+        stats[f"amp_success_h{h + 1}"] = 0.0
 
     total_samples = 0
     bad_samples = 0
@@ -196,9 +203,21 @@ def evaluate_model(
             freq_tol_hz = float(loss_cfg.get("freq_success_tol_hz", 1.0))
             amp_tol_m = float(loss_cfg.get("amp_success_tol_m", 1e-4))  # 0.1 mm
             amp_abs_err_m = torch.abs(torch.abs(c_hat_model_m) - torch.abs(c_true_local_batch_m))
-            success_per_harmonic = (freq_abs_err <= freq_tol_hz) & (amp_abs_err_m <= amp_tol_m)
-            success_per_patch = torch.all(success_per_harmonic, dim=1).float()
-            detection_success_rate = success_per_patch.mean()
+            freq_ok_per_harmonic = freq_abs_err <= freq_tol_hz
+            amp_ok_per_harmonic = amp_abs_err_m <= amp_tol_m
+            joint_ok_per_harmonic = freq_ok_per_harmonic & amp_ok_per_harmonic
+
+            freq_success_per_patch = torch.all(freq_ok_per_harmonic, dim=1).float()
+            amp_success_per_patch = torch.all(amp_ok_per_harmonic, dim=1).float()
+            joint_success_per_patch = torch.all(joint_ok_per_harmonic, dim=1).float()
+
+            freq_success_rate = freq_success_per_patch.mean()
+            amp_success_rate = amp_success_per_patch.mean()
+            joint_success_rate = joint_success_per_patch.mean()
+            detection_success_rate = joint_success_rate
+
+            freq_success_per_harmonic = freq_ok_per_harmonic.float().mean(dim=0)
+            amp_success_per_harmonic = amp_ok_per_harmonic.float().mean(dim=0)
 
             complex_coeff_rel_err_global = _complex_coeff_rel_err(c_hat_ls, c_true_global_batch)
             phase_circ_mae_rad_global = _circular_phase_mae(c_hat_ls, c_true_global_batch)
@@ -273,7 +292,13 @@ def evaluate_model(
             stats["total_kl"] += total_kl.item() * n
             stats["kl_w"] += kl_w.item() * n
             stats["freq_rmse_hz"] += freq_rmse.item() * n
+            stats["freq_success_rate"] += freq_success_rate.item() * n
+            stats["amp_success_rate"] += amp_success_rate.item() * n
+            stats["joint_success_rate"] += joint_success_rate.item() * n
             stats["detection_success_rate"] += detection_success_rate.item() * n
+            for h in range(num_harmonics):
+                stats[f"freq_success_h{h + 1}"] += freq_success_per_harmonic[h].item() * n
+                stats[f"amp_success_h{h + 1}"] += amp_success_per_harmonic[h].item() * n
             stats["complex_coeff_rel_err"] += complex_coeff_rel_err.item() * n
             stats["complex_coeff_rel_err_ls_local"] += complex_coeff_rel_err_ls_local.item() * n
             stats["complex_coeff_rel_err_model_local"] += complex_coeff_rel_err_model_local.item() * n
