@@ -331,3 +331,151 @@ def evaluate_model(
 
     stats["nan_or_inf_rate"] = bad_samples / total_samples
     return stats
+
+
+def compare_ls_with_predfreq_vs_truefreq(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    true_freqs_hz: Sequence[float],
+    true_amp_real: Sequence[float],
+    true_amp_imag: Sequence[float],
+    amp_scale: float,
+    amp_success_tol_m: float = 1e-4,
+):
+    """
+    Compare two LS backends on the same validation set:
+      1) LS(y | f_hat)
+      2) LS(y | f_true)
+
+    Returns:
+        dict with coefficient / amplitude metrics for both groups.
+    """
+    model.eval()
+
+    true_freqs = torch.tensor(true_freqs_hz, dtype=torch.float32, device=device)
+    true_amp_real_norm = torch.tensor(true_amp_real, dtype=torch.float32, device=device) / (amp_scale + 1e-12)
+    true_amp_imag_norm = torch.tensor(true_amp_imag, dtype=torch.float32, device=device) / (amp_scale + 1e-12)
+
+    stats = {
+        "predfreq_ls": {
+            "complex_coeff_rel_err_local": 0.0,
+            "amp_mape": 0.0,
+            "phase_circ_mae_rad": 0.0,
+            "recon_btt_mse": 0.0,
+            "amp_success_rate": 0.0,
+        },
+        "truefreq_ls": {
+            "complex_coeff_rel_err_local": 0.0,
+            "amp_mape": 0.0,
+            "phase_circ_mae_rad": 0.0,
+            "recon_btt_mse": 0.0,
+            "amp_success_rate": 0.0,
+        },
+    }
+
+    num_harmonics = len(true_freqs_hz)
+    for h in range(num_harmonics):
+        stats["predfreq_ls"][f"amp_success_h{h + 1}"] = 0.0
+        stats["truefreq_ls"][f"amp_success_h{h + 1}"] = 0.0
+
+    total_samples = 0
+
+    with torch.no_grad():
+        for x_batch, t_batch, probe_ids, _rev_ids, target_batch in dataloader:
+            x_batch = x_batch.to(device)
+            t_batch = t_batch.to(device)
+            probe_ids = probe_ids.to(device)
+            target_batch = target_batch.to(device)
+
+            t0 = t_batch[:, 0]
+            t_local = t_batch - t0[:, None]
+
+            model_out = model(x_batch, t_local, probe_ids=probe_ids)
+            if len(model_out) == 3:
+                _x_hat, dist_params, _aux = model_out
+            else:
+                _x_hat, dist_params = model_out
+
+            mu_f, _ = dist_params  # [B, K]
+            y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
+
+            # Group A: LS with predicted frequency
+            amp_real_pred, amp_imag_pred, c_pred = model.solve_amplitudes_ls(
+                y_complex, mu_f, t_local
+            )
+
+            # Group B: LS with true frequency
+            true_freq_batch = true_freqs.unsqueeze(0).expand_as(mu_f)
+            amp_real_true, amp_imag_true, c_truefreq = model.solve_amplitudes_ls(
+                y_complex, true_freq_batch, t_local
+            )
+
+            # true coefficients aligned to local patch time
+            c_true_global = torch.complex(true_amp_real_norm, true_amp_imag_norm)
+            c_true_local = _align_true_complex_coeff_to_local_time(
+                true_complex=c_true_global,
+                true_freq_hz=true_freqs,
+                t0=t0,
+            )
+            c_true_local_m = c_true_local * (amp_scale + 1e-12)
+
+            # meter-scale coefficients for amp success
+            c_pred_m = c_pred * (amp_scale + 1e-12)
+            c_truefreq_m = c_truefreq * (amp_scale + 1e-12)
+
+            # amplitude success
+            amp_abs_err_pred = torch.abs(torch.abs(c_pred_m) - torch.abs(c_true_local_m))
+            amp_abs_err_truefreq = torch.abs(torch.abs(c_truefreq_m) - torch.abs(c_true_local_m))
+
+            amp_ok_pred = amp_abs_err_pred <= amp_success_tol_m
+            amp_ok_truefreq = amp_abs_err_truefreq <= amp_success_tol_m
+
+            amp_success_patch_pred = torch.all(amp_ok_pred, dim=1).float().mean()
+            amp_success_patch_truefreq = torch.all(amp_ok_truefreq, dim=1).float().mean()
+
+            amp_success_per_h_pred = amp_ok_pred.float().mean(dim=0)
+            amp_success_per_h_truefreq = amp_ok_truefreq.float().mean(dim=0)
+
+            # local coefficient metrics
+            coeff_rel_err_pred = _complex_coeff_rel_err(c_pred, c_true_local)
+            coeff_rel_err_truefreq = _complex_coeff_rel_err(c_truefreq, c_true_local)
+
+            amp_mape_pred = _amp_mape(c_pred, c_true_local)
+            amp_mape_truefreq = _amp_mape(c_truefreq, c_true_local)
+
+            phase_mae_pred = _circular_phase_mae(c_pred, c_true_local)
+            phase_mae_truefreq = _circular_phase_mae(c_truefreq, c_true_local)
+
+            # reconstruction metrics
+            x_hat_pred = model.decode(amp_real_pred, amp_imag_pred, mu_f, t_local)
+            x_hat_truefreq = model.decode(amp_real_true, amp_imag_true, true_freq_batch, t_local)
+
+            recon_mse_pred = _complex_ri_mse(x_hat_pred, target_batch)
+            recon_mse_truefreq = _complex_ri_mse(x_hat_truefreq, target_batch)
+
+            n = x_batch.shape[0]
+            total_samples += n
+
+            stats["predfreq_ls"]["complex_coeff_rel_err_local"] += coeff_rel_err_pred.item() * n
+            stats["predfreq_ls"]["amp_mape"] += amp_mape_pred.item() * n
+            stats["predfreq_ls"]["phase_circ_mae_rad"] += phase_mae_pred.item() * n
+            stats["predfreq_ls"]["recon_btt_mse"] += recon_mse_pred.item() * n
+            stats["predfreq_ls"]["amp_success_rate"] += amp_success_patch_pred.item() * n
+
+            stats["truefreq_ls"]["complex_coeff_rel_err_local"] += coeff_rel_err_truefreq.item() * n
+            stats["truefreq_ls"]["amp_mape"] += amp_mape_truefreq.item() * n
+            stats["truefreq_ls"]["phase_circ_mae_rad"] += phase_mae_truefreq.item() * n
+            stats["truefreq_ls"]["recon_btt_mse"] += recon_mse_truefreq.item() * n
+            stats["truefreq_ls"]["amp_success_rate"] += amp_success_patch_truefreq.item() * n
+
+            for h in range(num_harmonics):
+                stats["predfreq_ls"][f"amp_success_h{h + 1}"] += amp_success_per_h_pred[h].item() * n
+                stats["truefreq_ls"][f"amp_success_h{h + 1}"] += amp_success_per_h_truefreq[h].item() * n
+
+    total_samples = max(total_samples, 1)
+    for group in stats.values():
+        for key in group:
+            group[key] /= total_samples
+
+    return stats
