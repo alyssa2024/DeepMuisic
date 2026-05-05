@@ -1,5 +1,6 @@
 import json
 import os
+import argparse
 from collections import defaultdict
 
 import numpy as np
@@ -151,7 +152,25 @@ def evaluate_aggregated_frequency(groups, true_freqs_hz, tol_hz=1.0):
     return results
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Patch aggregation ablation analysis.")
+    parser.add_argument(
+        "--ckpt",
+        type=str,
+        default=None,
+        help="Optional full checkpoint path. If omitted, use CONFIG['checkpoint']['dir']/best_freq_rmse.pt",
+    )
+    parser.add_argument(
+        "--group-span-revs",
+        type=int,
+        default=64,
+        help="Number of revolutions per aggregation group.",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     set_global_seed(CONFIG.get("seed", 42))
 
     data_cfg = CONFIG["data"]
@@ -164,7 +183,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(device)
 
-    ckpt_path = os.path.join(CONFIG["checkpoint"]["dir"], "best_freq_rmse.pt")
+    ckpt_path = args.ckpt or os.path.join(CONFIG["checkpoint"]["dir"], "best_freq_rmse.pt")
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
@@ -234,7 +253,7 @@ def main():
         amp_scale=amp_scale,
     )
 
-    groups = group_records_by_revolution(records, group_span_revs=64)
+    groups = group_records_by_revolution(records, group_span_revs=args.group_span_revs)
 
     results = evaluate_aggregated_frequency(
         groups=groups,

@@ -388,7 +388,18 @@ def collect_patch_predictions(
 
             # Boundary margin: farther from band edge => larger margin
             f_center = model.encoder.f_center[None, :]  # [1, K]
-            f_band = model.encoder.f_band[None, :]      # [1, K]
+            f_band_obj = model.encoder.f_band
+            if torch.is_tensor(f_band_obj):
+                if f_band_obj.ndim == 0:
+                    f_band = f_band_obj.to(mu_f.device, dtype=mu_f.dtype).reshape(1, 1)
+                else:
+                    f_band = f_band_obj.to(mu_f.device, dtype=mu_f.dtype).reshape(1, -1)
+            else:
+                f_band = torch.tensor(
+                    [[float(f_band_obj)]],
+                    device=mu_f.device,
+                    dtype=mu_f.dtype,
+                )
             band_edge_distance = f_band - torch.abs(mu_f - f_center)  # [B, K]
             boundary_margin = torch.min(band_edge_distance, dim=1).values  # [B]
 
