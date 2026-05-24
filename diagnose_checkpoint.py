@@ -110,6 +110,8 @@ def main():
         window_revs=data_cfg["window_revs"],
         hop_revs=data_cfg["hop_revs"],
         num_probes=data_cfg["num_probes"],
+        amp_agg_patches=data_cfg.get("amp_agg_patches", 1),
+        amp_agg_mode=data_cfg.get("amp_agg_mode", "center"),
     )
 
     val_ratio = eval_cfg.get("val_ratio", 0.2)
@@ -147,15 +149,37 @@ def main():
     amp_real_list = []
     amp_imag_list = []
     with torch.no_grad():
-        for x_batch, t_batch, probe_ids_batch, _rev_ids_batch, target_batch in val_loader:
+        for batch in val_loader:
+            if len(batch) == 5:
+                x_batch, t_batch, probe_ids_batch, _rev_ids_batch, target_batch = batch
+                amp_t_batch = None
+                amp_target_batch = None
+            else:
+                (
+                    x_batch,
+                    t_batch,
+                    probe_ids_batch,
+                    _rev_ids_batch,
+                    target_batch,
+                    amp_t_batch,
+                    amp_target_batch,
+                ) = batch
             x_batch = x_batch.to(device)
             t_batch = t_batch.to(device)
             probe_ids_batch = probe_ids_batch.to(device)
             target_batch = target_batch.to(device)
             t_local = t_batch - t_batch[:, :1]
+            if amp_t_batch is not None:
+                amp_t_batch = amp_t_batch.to(device)
+                amp_target_batch = amp_target_batch.to(device)
+                amp_t_local = amp_t_batch - t_batch[:, :1]
+                y_complex_ls = torch.complex(amp_target_batch[..., 0], amp_target_batch[..., 1])
+                t_for_ls = amp_t_local
+            else:
+                y_complex_ls = torch.complex(target_batch[..., 0], target_batch[..., 1])
+                t_for_ls = t_local
             mu_f, _ = model.encoder(x_batch, probe_ids=probe_ids_batch)
-            y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
-            mu_amp_real, mu_amp_imag, _ = model.solve_amplitudes_ls(y_complex, mu_f, t_local)
+            mu_amp_real, mu_amp_imag, _ = model.solve_amplitudes_ls(y_complex_ls, mu_f, t_for_ls)
             mu_f_list.append(mu_f)
             amp_real_list.append(mu_amp_real)
             amp_imag_list.append(mu_amp_imag)

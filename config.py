@@ -16,6 +16,8 @@ CONFIG = {
         "n_revs": 20000,
         "window_revs": 8,
         "hop_revs": 2,
+        "amp_agg_patches": 8,
+        "amp_agg_mode": "center",
         "batch_size": 16,
     },
     "signal": {

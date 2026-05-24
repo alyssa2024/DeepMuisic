@@ -76,6 +76,8 @@ class BTTPatchDataset(Dataset):
         window_revs=64,
         hop_revs=32,
         num_probes=4,
+        amp_agg_patches=1,
+        amp_agg_mode="center",
     ):
         self.features = torch.as_tensor(features, dtype=torch.float32)
         self.t_samples = torch.as_tensor(t_samples, dtype=torch.float32)
@@ -85,6 +87,10 @@ class BTTPatchDataset(Dataset):
         self.window_revs = window_revs
         self.hop_revs = hop_revs
         self.num_probes = num_probes
+        self.amp_agg_patches = int(amp_agg_patches)
+        self.amp_agg_mode = amp_agg_mode
+        if self.amp_agg_patches < 1:
+            raise ValueError(f"amp_agg_patches must be >= 1, got {self.amp_agg_patches}")
 
         self.seq_len = window_revs * num_probes
         self.hop_len = hop_revs * num_probes
@@ -113,7 +119,35 @@ class BTTPatchDataset(Dataset):
         # Target signal for reconstruction loss: complex signal represented by real/imag.
         target = x_feat[:, :2]                  # [L, 2]
 
-        return x_feat, t, probe_id, rev_id, target
+        # Amplitude LS aggregation window from neighboring patch starts.
+        if self.amp_agg_patches == 1:
+            amp_start = start
+            amp_end = end
+        else:
+            if self.amp_agg_mode != "center":
+                raise ValueError(f"Unsupported amp_agg_mode={self.amp_agg_mode}, expected 'center'.")
+
+            half = self.amp_agg_patches // 2
+            patch_start_idx = idx - half
+            patch_end_idx = patch_start_idx + self.amp_agg_patches
+
+            if patch_start_idx < 0:
+                patch_start_idx = 0
+                patch_end_idx = min(len(self.starts), self.amp_agg_patches)
+
+            if patch_end_idx > len(self.starts):
+                patch_end_idx = len(self.starts)
+                patch_start_idx = max(0, len(self.starts) - self.amp_agg_patches)
+
+            amp_start = self.starts[patch_start_idx]
+            amp_last_start = self.starts[patch_end_idx - 1]
+            amp_end = amp_last_start + self.seq_len
+
+        amp_feat = self.features[amp_start:amp_end]       # [L_amp, 6]
+        amp_t = self.t_samples[amp_start:amp_end]         # [L_amp]
+        amp_target = amp_feat[:, :2]                      # [L_amp, 2]
+
+        return x_feat, t, probe_id, rev_id, target, amp_t, amp_target
 
 
 def chronological_train_val_split(dataset, val_ratio=0.2):
@@ -130,7 +164,9 @@ def chronological_train_val_split(dataset, val_ratio=0.2):
     if n_train_target + n_val > n_total:
         n_val = n_total - n_train_target
 
-    gap_windows = max(0, int(np.ceil(dataset.seq_len / dataset.hop_len)) - 1)
+    base_gap = max(0, int(np.ceil(dataset.seq_len / dataset.hop_len)) - 1)
+    amp_gap = max(0, int(getattr(dataset, "amp_agg_patches", 1)) // 2)
+    gap_windows = max(base_gap, amp_gap)
     max_train_end = n_total - n_val - gap_windows
     train_end = min(n_train_target, max_train_end)
 

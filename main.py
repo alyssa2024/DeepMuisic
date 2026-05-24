@@ -247,6 +247,8 @@ def main():
         window_revs=data_cfg["window_revs"],
         hop_revs=data_cfg["hop_revs"],
         num_probes=data_cfg["num_probes"],
+        amp_agg_patches=data_cfg.get("amp_agg_patches", 1),
+        amp_agg_mode=data_cfg.get("amp_agg_mode", "center"),
     )
 
     eval_cfg = CONFIG.get("eval", {})
@@ -369,12 +371,33 @@ def main():
             train_residual_rel_sum = 0.0
             train_batches = 0
 
-            for x_batch, t_batch, probe_ids, rev_ids, target_batch in train_loader:
+            for batch in train_loader:
+                if len(batch) == 5:
+                    x_batch, t_batch, probe_ids, rev_ids, target_batch = batch
+                    amp_t_batch = None
+                    amp_target_batch = None
+                else:
+                    (
+                        x_batch,
+                        t_batch,
+                        probe_ids,
+                        rev_ids,
+                        target_batch,
+                        amp_t_batch,
+                        amp_target_batch,
+                    ) = batch
                 x_batch = x_batch.to(device)  # [B, L, 6]
                 t_batch = t_batch.to(device)  # [B, L]
                 probe_ids = probe_ids.to(device)  # [B, L]
                 target_batch = target_batch.to(device)  # [B, L, 2]
-                t_local = t_batch - t_batch[:, :1]
+                t0 = t_batch[:, :1]
+                t_local = t_batch - t0
+                if amp_t_batch is not None:
+                    amp_t_batch = amp_t_batch.to(device)
+                    amp_target_batch = amp_target_batch.to(device)
+                    amp_t_local = amp_t_batch - t0
+                else:
+                    amp_t_local = None
 
                 optimizer.zero_grad()
 
@@ -382,6 +405,8 @@ def main():
                     x_batch,
                     t_local,
                     probe_ids=probe_ids,
+                    amp_t=amp_t_local,
+                    amp_target=amp_target_batch,
                 )
                 if len(model_out) == 3:
                     x_hat, dist_params, aux = model_out

@@ -130,7 +130,7 @@ class PhysicalHarmonicVAE(nn.Module):
         delta_real, delta_imag = delta.chunk(2, dim=-1)
         return delta_real, delta_imag
 
-    def forward(self, x, t, probe_ids=None):
+    def forward(self, x, t, probe_ids=None, amp_t=None, amp_target=None):
         """
         Conservative LS-centered posterior:
 
@@ -156,8 +156,14 @@ class PhysicalHarmonicVAE(nn.Module):
         else:
             f = self.reparameterize(mu_f, logvar_f)
 
-        y_complex = torch.complex(x[..., 0], x[..., 1])
-        amp_real_ls, amp_imag_ls, _ = self.solve_amplitudes_ls(y_complex, f, t)
+        if amp_target is None or amp_t is None:
+            y_ls = torch.complex(x[..., 0], x[..., 1])
+            t_ls = t
+        else:
+            y_ls = torch.complex(amp_target[..., 0], amp_target[..., 1])
+            t_ls = amp_t
+
+        amp_real_ls, amp_imag_ls, _ = self.solve_amplitudes_ls(y_ls, f, t_ls)
         if self.use_amp_residual and self.amp_residual_gamma != 0.0:
             delta_real, delta_imag = self.predict_amp_residual(amp_real_ls, amp_imag_ls, f)
             amp_real = amp_real_ls + self.amp_residual_gamma * delta_real

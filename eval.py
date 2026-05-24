@@ -133,15 +133,41 @@ def evaluate_model(
     bad_samples = 0
 
     with torch.no_grad():
-        for x_batch, t_batch, probe_ids, _rev_ids, target_batch in dataloader:
+        for batch in dataloader:
+            if len(batch) == 5:
+                x_batch, t_batch, probe_ids, _rev_ids, target_batch = batch
+                amp_t_batch = None
+                amp_target_batch = None
+            else:
+                (
+                    x_batch,
+                    t_batch,
+                    probe_ids,
+                    _rev_ids,
+                    target_batch,
+                    amp_t_batch,
+                    amp_target_batch,
+                ) = batch
             x_batch = x_batch.to(device)
             t_batch = t_batch.to(device)
             probe_ids = probe_ids.to(device)
             target_batch = target_batch.to(device)
             t0 = t_batch[:, 0]
             t_local = t_batch - t0[:, None]
+            if amp_t_batch is not None:
+                amp_t_batch = amp_t_batch.to(device)
+                amp_target_batch = amp_target_batch.to(device)
+                amp_t_local = amp_t_batch - t0[:, None]
+            else:
+                amp_t_local = None
 
-            model_out = model(x_batch, t_local, probe_ids=probe_ids)
+            model_out = model(
+                x_batch,
+                t_local,
+                probe_ids=probe_ids,
+                amp_t=amp_t_local,
+                amp_target=amp_target_batch,
+            )
             if len(model_out) == 3:
                 x_hat, dist_params, aux = model_out
             else:
@@ -173,8 +199,14 @@ def evaluate_model(
             freq_rmse = torch.sqrt(torch.mean(freq_err ** 2))
 
             y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
+            if amp_target_batch is not None and amp_t_local is not None:
+                y_complex_ls = torch.complex(amp_target_batch[..., 0], amp_target_batch[..., 1])
+                t_for_ls = amp_t_local
+            else:
+                y_complex_ls = y_complex
+                t_for_ls = t_local
 
-            amp_real_ls, amp_imag_ls, _ = model.solve_amplitudes_ls(y_complex, mu_f, t_local)
+            amp_real_ls, amp_imag_ls, _ = model.solve_amplitudes_ls(y_complex_ls, mu_f, t_for_ls)
             c_hat_ls = torch.complex(amp_real_ls, amp_imag_ls)
 
             if aux is not None and "amp_real" in aux and "amp_imag" in aux:
