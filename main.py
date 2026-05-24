@@ -139,27 +139,29 @@ def _build_metrics_payload(
     payload = dict(last_metrics)
     payload["last_metrics"] = dict(last_metrics)
     payload["best_metrics"] = dict(best_metrics) if best_metrics is not None else None
-    payload["best_epoch_by_freq_rmse"] = best_epoch
+    payload["best_epoch_by_monitor"] = best_epoch
+    payload["early_stopping_monitor"] = str(early_monitor)
+
+    payload["best_monitor_value"] = (
+        best_metrics.get(early_monitor) if best_metrics is not None else None
+    )
+    payload["last_monitor_value"] = last_metrics.get(early_monitor)
+
+    # Keep freq metrics for backward-compatible experiment comparisons.
     payload["best_freq_rmse_hz"] = (
         best_metrics.get("freq_rmse_hz") if best_metrics is not None else None
     )
     payload["last_freq_rmse_hz"] = last_metrics.get("freq_rmse_hz")
 
-    if (
-        best_metrics is not None
-        and best_metrics.get("freq_rmse_hz") is not None
-        and best_metrics["freq_rmse_hz"] > 0
-    ):
-        payload["freq_rmse_degradation_ratio"] = (
-            last_metrics.get("freq_rmse_hz", 0.0) / best_metrics["freq_rmse_hz"]
-        )
-    else:
-        payload["freq_rmse_degradation_ratio"] = None
+    # Keep recon metrics for current objective tracking.
+    payload["best_recon_btt_mse"] = (
+        best_metrics.get("recon_btt_mse") if best_metrics is not None else None
+    )
+    payload["last_recon_btt_mse"] = last_metrics.get("recon_btt_mse")
 
     payload["early_stopped"] = bool(early_stopped)
     payload["early_stop_epoch"] = early_stop_epoch
     payload["early_stopping_patience"] = int(early_patience)
-    payload["early_stopping_monitor"] = str(early_monitor)
     return payload
 
 
@@ -546,6 +548,11 @@ def main():
                 final_metrics["seed"] = seed
                 final_metrics["epoch_to_target"] = epoch_to_target
 
+                if early_monitor not in val_metrics:
+                    raise KeyError(
+                        f"early_stopping.monitor={early_monitor!r} is not in val_metrics. "
+                        f"Available keys: {sorted(val_metrics.keys())}"
+                    )
                 monitor_value = float(val_metrics[early_monitor])
                 if early_mode == "min":
                     improved = monitor_value < (best_monitor_value - early_min_delta)
@@ -557,7 +564,8 @@ def main():
                     best_metrics = dict(final_metrics)
                     best_epoch = epoch + 1
                     epochs_without_improvement = 0
-                    best_ckpt = os.path.join(ckpt_dir, "best_freq_rmse.pt")
+                    safe_monitor_name = str(early_monitor).replace("/", "_")
+                    best_ckpt = os.path.join(ckpt_dir, f"best_{safe_monitor_name}.pt")
                     save_checkpoint(
                         path=best_ckpt,
                         model=model,

@@ -45,10 +45,10 @@ CONFIG = {
         "max_grad_norm": 0.1,
         "early_stopping": {
             "enabled": True,
-            "monitor": "freq_rmse_hz",
+            "monitor": "recon_btt_mse",
             "mode": "min",
             "patience": 3,
-            "min_delta": 0.0,
+            "min_delta": 1e-6,
         },
     },
     "eval": {
