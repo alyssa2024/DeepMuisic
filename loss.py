@@ -183,11 +183,18 @@ def compute_harmonic_loss(
         "loss": loss.detach(),
         "recon_loss": recon_loss.detach(),
         "freq_prior_reg": freq_prior_reg.detach(),
+        "posterior_std_hz_mean": std_f.mean().detach(),
         "freq_sample_outside_rate": outside_rate.detach(),
         **{
             k: v.detach() if torch.is_tensor(v) else v
             for k, v in recon_diag.items()
-            if k not in ("f_samples", "y_hat_samples", "c_hat_samples")
+            if k
+            not in (
+                "f_samples",
+                "y_hat_samples",
+                "c_hat_samples",
+                "freq_sample_std_mean",
+            )
         },
     }
 

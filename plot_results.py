@@ -145,9 +145,14 @@ def main():
     experiments = sorted(df["experiment"].unique())
     for exp in experiments:
         plot_metric(df, experiment=exp, metric="freq_rmse_hz_mean", ylabel="Frequency RMSE (Hz)", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="freq_nrmse_band_mean", ylabel="Frequency NRMSE / band", out_dir=plot_dir)
         plot_metric(df, experiment=exp, metric="freq_success_rate_mean", ylabel="Frequency success rate", out_dir=plot_dir)
-        plot_metric(df, experiment=exp, metric="amp_success_rate_mean", ylabel="Amplitude success rate", out_dir=plot_dir)
-        plot_metric(df, experiment=exp, metric="joint_success_rate_mean", ylabel="Joint success rate", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="amp_mape_mean", ylabel="Amplitude MAPE", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="amp_success_rate_magnitude", ylabel="Amplitude magnitude success rate", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="complex_coeff_rel_err_mean", ylabel="Complex coefficient relative error", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="phase_circ_mae_rad", ylabel="Circular phase MAE (rad)", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="posterior_std_hz_mean", ylabel="Posterior std (Hz)", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="ls_cond_p95", ylabel="LS condition p95", out_dir=plot_dir)
 
 
 if __name__ == "__main__":

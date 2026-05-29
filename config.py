@@ -74,6 +74,7 @@ CONFIG = {
         "success": {
             "freq_relative_tol": 0.02,
             "amp_relative_tol": 0.05,
+            "complex_coeff_relative_tol": 0.05,
         },
     },
     "training": {

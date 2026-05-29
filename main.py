@@ -77,11 +77,17 @@ def _save_training_curves(history, output_dir):
             ("eval/recon_mse_mean", "recon_mean"),
             ("eval/recon_mse_sampled", "recon_sampled"),
             ("eval/freq_rmse_hz_mean", "freq_rmse"),
+            ("eval/freq_nrmse_band_mean", "freq_nrmse"),
         ],
         "eval_success.png": [
             ("eval/freq_success_rate_mean", "freq_success"),
-            ("eval/amp_success_rate_mean", "amp_success"),
-            ("eval/joint_success_rate_mean", "joint_success"),
+            ("eval/amp_success_rate_magnitude", "amp_success_mag"),
+            ("eval/complex_coeff_success_rate", "complex_success"),
+        ],
+        "eval_coefficients.png": [
+            ("eval/amp_mape_mean", "amp_mape"),
+            ("eval/phase_circ_mae_rad", "phase_mae"),
+            ("eval/complex_coeff_rel_err_mean", "complex_rel_err"),
         ],
     }
 
@@ -305,7 +311,7 @@ def main():
                 "loss": 0.0,
                 "recon": 0.0,
                 "freq_prior_reg": 0.0,
-                "freq_sample_std_mean": 0.0,
+                "posterior_std_hz_mean": 0.0,
                 "freq_sample_outside_rate": 0.0,
                 "ls_cond_mean": 0.0,
                 "ls_cond_p95": 0.0,
@@ -357,7 +363,7 @@ def main():
                 train_sums["recon"] += recon.item()
                 train_sums["freq_prior_reg"] += freq_prior_reg.item()
                 for key in (
-                    "freq_sample_std_mean",
+                    "posterior_std_hz_mean",
                     "freq_sample_outside_rate",
                     "ls_cond_mean",
                     "ls_cond_p95",
@@ -393,7 +399,7 @@ def main():
                 f"train_loss={train_means['loss']:.6f} "
                 f"train_recon={train_means['recon']:.6f} "
                 f"freq_prior_reg={train_means['freq_prior_reg']:.6f} "
-                f"freq_std={train_means['freq_sample_std_mean']:.4f} "
+                f"posterior_std={train_means['posterior_std_hz_mean']:.4f} "
                 f"outside={train_means['freq_sample_outside_rate']:.4f} "
                 f"ls_cond={train_means['ls_cond_mean']:.3e} "
                 f"ls_amp_norm={train_means['ls_amp_norm_mean']:.3e}"
@@ -471,9 +477,14 @@ def main():
                     f"recon_mse_mean={val_metrics['recon_mse_mean']:.6f} "
                     f"recon_mse_sampled={val_metrics['recon_mse_sampled']:.6f} "
                     f"freq_rmse_hz_mean={val_metrics['freq_rmse_hz_mean']:.4f} "
+                    f"freq_nrmse_band_mean={val_metrics['freq_nrmse_band_mean']:.4f} "
                     f"freq_success={val_metrics['freq_success_rate_mean']:.4f} "
-                    f"amp_success={val_metrics['amp_success_rate_mean']:.4f} "
-                    f"joint_success={val_metrics['joint_success_rate_mean']:.4f} "
+                    f"amp_mape={val_metrics['amp_mape_mean']:.4f} "
+                    f"amp_success_mag={val_metrics['amp_success_rate_magnitude']:.4f} "
+                    f"phase_mae={val_metrics['phase_circ_mae_rad']:.4f} "
+                    f"complex_rel_err={val_metrics['complex_coeff_rel_err_mean']:.4f} "
+                    f"complex_success={val_metrics['complex_coeff_success_rate']:.4f} "
+                    f"posterior_std={val_metrics['posterior_std_hz_mean']:.4f} "
                     f"outside={val_metrics['freq_sample_outside_rate']:.4f} "
                     f"ls_cond_p95={val_metrics['ls_cond_p95']:.3e} "
                     f"ls_amp_norm_p95={val_metrics['ls_amp_norm_p95']:.3e} "

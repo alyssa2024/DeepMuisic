@@ -139,6 +139,7 @@ def run_grid(args):
     base_cfg["loss"].setdefault("success", {})
     base_cfg["loss"]["success"]["freq_relative_tol"] = args.freq_relative_tol
     base_cfg["loss"]["success"]["amp_relative_tol"] = args.amp_relative_tol
+    base_cfg["loss"]["success"]["complex_coeff_relative_tol"] = args.complex_coeff_relative_tol
 
     grid = build_experiment_grid(args.experiment, base_cfg)
     if args.seeds:
@@ -190,6 +191,7 @@ if __name__ == "__main__":
     parser.add_argument("--seeds", type=str, default=None)
     parser.add_argument("--freq_relative_tol", type=float, default=0.02)
     parser.add_argument("--amp_relative_tol", type=float, default=0.05)
+    parser.add_argument("--complex_coeff_relative_tol", type=float, default=0.05)
     parser.add_argument("--monitor", type=str, default="freq_rmse_hz_mean")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
