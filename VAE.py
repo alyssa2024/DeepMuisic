@@ -121,7 +121,11 @@ class PhysicalHarmonicVAE(nn.Module):
                 dtype=f.dtype,
                 device=f.device,
             )
-            f_norm = (f - f_center) / float(self.encoder.f_band)
+            f_band = self.encoder.f_band.unsqueeze(0).to(
+                dtype=f.dtype,
+                device=f.device,
+            )
+            f_norm = (f - f_center) / (f_band + 1e-12)
         else:
             f_norm = f
 

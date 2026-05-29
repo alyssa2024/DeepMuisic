@@ -31,6 +31,35 @@ def build_prior_a_w(freqs_hz):
     return true_w / (2.0 * np.sqrt(2.0 / np.pi))
 
 
+def build_frequency_search_band(prior_cfg, fallback_center_hz):
+    """
+    Build per-harmonic search centers and half bands.
+
+    f_search_band_relative is the full relative bandwidth. A value of 0.10
+    gives the v3-style support [0.95 * center, 1.05 * center].
+    """
+    f_center_hz = np.asarray(
+        prior_cfg.get("f_center_hz", fallback_center_hz),
+        dtype=np.float32,
+    )
+    if "f_search_band_relative" in prior_cfg:
+        relative_band = float(prior_cfg["f_search_band_relative"])
+        f_band_hz = f_center_hz * (relative_band / 2.0)
+    elif "f_relative_half_band" in prior_cfg:
+        f_band_hz = f_center_hz * float(prior_cfg["f_relative_half_band"])
+    else:
+        f_band_hz = prior_cfg.get("f_band_hz", 15.0)
+
+    f_band_hz = np.asarray(f_band_hz, dtype=np.float32)
+    if f_band_hz.ndim == 0:
+        f_band_hz = np.full_like(f_center_hz, float(f_band_hz))
+    if f_band_hz.shape != f_center_hz.shape:
+        raise ValueError(
+            f"f_band_hz shape {f_band_hz.shape} must match f_center_hz shape {f_center_hz.shape}"
+        )
+    return f_center_hz.tolist(), f_band_hz.tolist()
+
+
 def set_global_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -185,6 +214,13 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    f_center_hz, f_band_hz = build_frequency_search_band(
+        prior_cfg,
+        signal_cfg["freqs_hz"],
+    )
+    print(f"Frequency centers: {f_center_hz}")
+    print(f"Frequency half bands: {f_band_hz}")
+
     encoder = VariationalIndependentTimeSeriesTransformer(
         input_dim=data_cfg["input_dim"],
         output_dim=data_cfg["num_harmonics"],
@@ -196,8 +232,8 @@ def main():
         num_probes=data_cfg["num_probes"],
         use_standard_pe=model_cfg["use_standard_pe"],
         device=device,
-        f_center_hz=prior_cfg.get("f_center_hz", signal_cfg["freqs_hz"]),
-        f_band_hz=prior_cfg.get("f_band_hz", 15.0),
+        f_center_hz=f_center_hz,
+        f_band_hz=f_band_hz,
     )
 
     model = PhysicalHarmonicVAE(

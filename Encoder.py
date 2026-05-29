@@ -92,7 +92,16 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
             "f_center",
             torch.tensor(f_center_hz, dtype=torch.float32),
         )
-        self.f_band = float(f_band_hz)
+        f_band = torch.as_tensor(f_band_hz, dtype=torch.float32)
+        if f_band.ndim == 0:
+            f_band = f_band.repeat(output_dim)
+        if len(f_band) != output_dim:
+            raise ValueError(
+                f"len(f_band_hz)={len(f_band)} must equal output_dim={output_dim}"
+            )
+        if torch.any(f_band <= 0):
+            raise ValueError("f_band_hz values must be positive")
+        self.register_buffer("f_band", f_band, persistent=False)
 
     def generate_causal_mask(self, seq_len):
         # Upper triangular mask: (seq_len, seq_len)

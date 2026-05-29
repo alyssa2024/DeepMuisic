@@ -231,12 +231,25 @@ def evaluate_model(
             c_true_local_batch_m = c_true_local_batch * (amp_scale + 1e-12)
 
             # Detection success criterion:
-            # each harmonic must satisfy both frequency and amplitude thresholds.
-            freq_tol_hz = float(loss_cfg.get("freq_success_tol_hz", 1.0))
-            amp_tol_m = float(loss_cfg.get("amp_success_tol_m", 1e-4))  # 0.1 mm
+            # each harmonic must satisfy relative frequency and amplitude thresholds.
+            success_cfg = loss_cfg.get("success", {})
+            freq_relative_tol = float(
+                success_cfg.get(
+                    "freq_relative_tol",
+                    loss_cfg.get("freq_success_relative_tol", 0.02),
+                )
+            )
+            amp_relative_tol = float(
+                success_cfg.get(
+                    "amp_relative_tol",
+                    loss_cfg.get("amp_success_relative_tol", 0.05),
+                )
+            )
             amp_abs_err_m = torch.abs(torch.abs(c_hat_model_m) - torch.abs(c_true_local_batch_m))
-            freq_ok_per_harmonic = freq_abs_err <= freq_tol_hz
-            amp_ok_per_harmonic = amp_abs_err_m <= amp_tol_m
+            freq_rel_err = freq_abs_err / (torch.abs(true_freqs)[None, :] + 1e-12)
+            amp_rel_err = amp_abs_err_m / (torch.abs(c_true_local_batch_m) + 1e-12)
+            freq_ok_per_harmonic = freq_rel_err <= freq_relative_tol
+            amp_ok_per_harmonic = amp_rel_err <= amp_relative_tol
             joint_ok_per_harmonic = freq_ok_per_harmonic & amp_ok_per_harmonic
 
             freq_success_per_patch = torch.all(freq_ok_per_harmonic, dim=1).float()

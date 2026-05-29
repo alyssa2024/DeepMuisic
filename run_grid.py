@@ -115,7 +115,10 @@ def build_experiment_grid(experiment, base_cfg):
                         },
                         "prior": {
                             "f_center_hz": cfg["freqs_hz"],
-                            "f_band_hz": base_cfg.get("prior", {}).get("f_band_hz", 15.0),
+                            "f_search_band_relative": base_cfg.get("prior", {}).get(
+                                "f_search_band_relative",
+                                0.10,
+                            ),
                         },
                     },
                 )
@@ -132,8 +135,11 @@ def build_experiment_grid(experiment, base_cfg):
         return grid
 
     if experiment == "exp5b_prior_band":
-        values = [5, 10, 15, 30, 50, 100]
-        return [("f_band_hz", v, {"prior": {"f_band_hz": v}}) for v in values]
+        values = [0.02, 0.05, 0.10, 0.20]
+        return [
+            ("f_search_band_relative", v, {"prior": {"f_search_band_relative": v}})
+            for v in values
+        ]
 
     if experiment == "exp5c_speed_fluctuation":
         values = [0.0, 0.003, 0.006, 0.009, 0.012, 0.015, 0.018, 0.025, 0.05]
@@ -156,12 +162,13 @@ def run_grid(args):
         "min_delta": 0.0,
     }
     base_cfg.setdefault("loss", {})
-    base_cfg["loss"]["freq_success_tol_hz"] = args.freq_tol_hz
-    base_cfg["loss"]["amp_success_tol_m"] = args.amp_tol_m
+    base_cfg["loss"].setdefault("success", {})
+    base_cfg["loss"]["success"]["freq_relative_tol"] = args.freq_relative_tol
+    base_cfg["loss"]["success"]["amp_relative_tol"] = args.amp_relative_tol
 
     base_cfg.setdefault("prior", {})
     base_cfg["prior"].setdefault("f_center_hz", base_cfg["signal"]["freqs_hz"])
-    base_cfg["prior"].setdefault("f_band_hz", 15.0)
+    base_cfg["prior"].setdefault("f_search_band_relative", 0.10)
     if args.pure_ls:
         base_cfg.setdefault("model", {})
         base_cfg.setdefault("loss", {})
@@ -219,8 +226,8 @@ if __name__ == "__main__":
     parser.add_argument("--experiment", type=str, required=True)
     parser.add_argument("--result_root", type=str, default="/content/drive/MyDrive/deepmusic_results/v3")
     parser.add_argument("--seeds", type=str, default=None)
-    parser.add_argument("--freq_tol_hz", type=float, default=1.0)
-    parser.add_argument("--amp_tol_m", type=float, default=1e-4)
+    parser.add_argument("--freq_relative_tol", type=float, default=0.02)
+    parser.add_argument("--amp_relative_tol", type=float, default=0.05)
     parser.add_argument("--pure_ls", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()

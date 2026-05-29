@@ -14,6 +14,7 @@ from dataset import (
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from VAE import PhysicalHarmonicVAE
 from eval import evaluate_model
+from main import build_frequency_search_band
 from synthesis_dataset import (
     generate_complex_harmonic_displacement,
     simulate_fluctuating_speed_btt,
@@ -41,6 +42,7 @@ def main():
     signal_cfg = CONFIG["signal"]
     model_cfg = CONFIG["model"]
     loss_cfg = CONFIG["loss"]
+    prior_cfg = CONFIG.get("prior", {})
     eval_cfg = CONFIG.get("eval", {})
     ckpt_cfg = CONFIG.get("checkpoint", {})
     seed = CONFIG.get("seed", 42)
@@ -56,6 +58,10 @@ def main():
     print(f"Using device: {device}")
     print(f"Checkpoint: {ckpt_path}")
 
+    f_center_hz, f_band_hz = build_frequency_search_band(
+        prior_cfg,
+        signal_cfg["freqs_hz"],
+    )
     encoder = VariationalIndependentTimeSeriesTransformer(
         input_dim=data_cfg["input_dim"],
         output_dim=data_cfg["num_harmonics"],
@@ -67,6 +73,8 @@ def main():
         num_probes=data_cfg["num_probes"],
         use_standard_pe=model_cfg["use_standard_pe"],
         device=device,
+        f_center_hz=f_center_hz,
+        f_band_hz=f_band_hz,
     )
     model = PhysicalHarmonicVAE(encoder).to(device)
 
@@ -192,7 +200,7 @@ def main():
 
     print("==== Harmonic Diagnostics ====")
     print("f_center(Hz):", model.encoder.f_center.detach().cpu().numpy())
-    print("f_band(Hz):", float(model.encoder.f_band))
+    print("f_band(Hz):", model.encoder.f_band.detach().cpu().numpy())
     print("mu_f_mean(Hz):", mu_f_all.mean(dim=0).detach().cpu().numpy())
     print("f_offset_mean(Hz):", f_offset.mean(dim=0).detach().cpu().numpy())
     print("f_ratio_mean:", f_ratio.mean(dim=0).detach().cpu().numpy())

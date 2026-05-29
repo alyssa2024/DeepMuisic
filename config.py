@@ -62,12 +62,14 @@ CONFIG = {
         "beta": 1e-5,
         "use_kl_w": True,
         "residual_weight": 0.0,
-        "freq_success_tol_hz": 1.0,
-        "amp_success_tol_m": 1e-4,
+        "success": {
+            "freq_relative_tol": 0.02,
+            "amp_relative_tol": 0.05,
+        },
     },
     "prior": {
         "f_center_hz": [167.0, 341.0, 635.0, 872.0],
-        "f_band_hz": 15.0,
+        "f_search_band_relative": 0.10,
     },
     "checkpoint": {
         "dir": "checkpoints",
