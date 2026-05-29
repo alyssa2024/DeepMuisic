@@ -1,9 +1,7 @@
-﻿import argparse
+import argparse
 import copy
 import json
 from pathlib import Path
-
-import numpy as np
 
 import main as train_main
 from config import CONFIG
@@ -24,14 +22,8 @@ def safe_name(x):
 
 
 PROBE_CONFIGS = {
-    3: {
-        "num_probes": 3,
-        "probes": [0, 360 * 1 / 7, 360 * 3 / 7],
-    },
-    4: {
-        "num_probes": 4,
-        "probes": [0, 360 * 1 / 13, 360 * 4 / 13, 360 * 6 / 13],
-    },
+    3: {"num_probes": 3, "probes": [0, 360 * 1 / 7, 360 * 3 / 7]},
+    4: {"num_probes": 4, "probes": [0, 360 * 1 / 13, 360 * 4 / 13, 360 * 6 / 13]},
     5: {
         "num_probes": 5,
         "probes": [0, 360 * 1 / 19, 360 * 2 / 19, 360 * 6 / 19, 360 * 9 / 19],
@@ -45,34 +37,24 @@ PROBE_CONFIGS = {
 
 K_CONFIGS = {
     1: {
-        "freqs_hz": [341.0],
-        "amp_real_m": [0.0005403],
-        "amp_imag_m": [0.0008415],
+        "center_hz": [341.0],
+        "amp_real_center_m": [0.0005403],
+        "amp_imag_center_m": [0.0008415],
     },
     2: {
-        "freqs_hz": [167.0, 341.0],
-        "amp_real_m": [0.0006, 0.0005403],
-        "amp_imag_m": [0.0, 0.0008415],
+        "center_hz": [167.0, 341.0],
+        "amp_real_center_m": [0.0006, 0.0005403],
+        "amp_imag_center_m": [0.0, 0.0008415],
     },
     3: {
-        "freqs_hz": [167.0, 341.0, 635.0],
-        "amp_real_m": [0.0006, 0.0005403, -0.0003329],
-        "amp_imag_m": [0.0, 0.0008415, 0.0007274],
+        "center_hz": [167.0, 341.0, 635.0],
+        "amp_real_center_m": [0.0006, 0.0005403, -0.0003329],
+        "amp_imag_center_m": [0.0, 0.0008415, 0.0007274],
     },
     4: {
-        "freqs_hz": [167.0, 341.0, 635.0, 872.0],
-        "amp_real_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
-        "amp_imag_m": [0.0, 0.0008415, 0.0007274, 0.0001270],
-    },
-    5: {
-        "freqs_hz": [167.0, 341.0, 635.0, 872.0, 930.0],
-        "amp_real_m": [0.0006, 0.0005403, -0.0003329, -0.0008910, 0.0003000],
-        "amp_imag_m": [0.0, 0.0008415, 0.0007274, 0.0001270, -0.0002000],
-    },
-    6: {
-        "freqs_hz": [120.0, 167.0, 341.0, 635.0, 872.0, 930.0],
-        "amp_real_m": [0.0003000, 0.0006, 0.0005403, -0.0003329, -0.0008910, 0.0003000],
-        "amp_imag_m": [0.0001000, 0.0, 0.0008415, 0.0007274, 0.0001270, -0.0002000],
+        "center_hz": [167.0, 341.0, 635.0, 872.0],
+        "amp_real_center_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
+        "amp_imag_center_m": [0.0, 0.0008415, 0.0007274, 0.0001270],
     },
 }
 
@@ -82,18 +64,11 @@ def build_experiment_grid(experiment, base_cfg):
         values = base_cfg.get("experiment", {}).get("snr_values", [-5, 0, 5, 10, 15, 20])
         return [("snr_db", v, {"signal": {"snr_db": v}}) for v in values]
 
-    if experiment == "exp2_n_revs":
-        values = [2000, 5000, 10000, 20000, 40000]
-        return [("n_revs", v, {"data": {"n_revs": v}}) for v in values]
+    if experiment == "exp2_num_cycles":
+        values = [4, 8, 16, 32, 64]
+        return [("num_cycles", v, {"data": {"num_cycles": v}}) for v in values]
 
-    if experiment == "exp3a_window_revs":
-        values = [4, 8, 16, 32, 64, 128]
-        return [
-            ("window_revs", v, {"data": {"window_revs": v, "hop_revs": max(1, v // 4)}})
-            for v in values
-        ]
-
-    if experiment == "exp3b_num_probes":
+    if experiment == "exp3_num_probes":
         return [
             ("num_probes", p, {"data": {"num_probes": cfg["num_probes"], "probes": cfg["probes"]}})
             for p, cfg in PROBE_CONFIGS.items()
@@ -108,36 +83,41 @@ def build_experiment_grid(experiment, base_cfg):
                     k,
                     {
                         "data": {"num_harmonics": k},
+                        "frequency": {"center_hz": cfg["center_hz"]},
                         "signal": {
-                            "freqs_hz": cfg["freqs_hz"],
-                            "amp_real_m": cfg["amp_real_m"],
-                            "amp_imag_m": cfg["amp_imag_m"],
-                        },
-                        "prior": {
-                            "f_center_hz": cfg["freqs_hz"],
-                            "f_band_hz": base_cfg.get("prior", {}).get("f_band_hz", 15.0),
+                            "amp_real_center_m": cfg["amp_real_center_m"],
+                            "amp_imag_center_m": cfg["amp_imag_center_m"],
                         },
                     },
                 )
             )
         return grid
 
-    if experiment == "exp5a_prior_center_shift":
-        ratios = [-0.10, -0.05, -0.02, -0.01, -0.005, 0.0, 0.005, 0.01, 0.02, 0.05, 0.10]
-        true_freqs = np.array(base_cfg["signal"]["freqs_hz"], dtype=float)
-        grid = []
-        for r in ratios:
-            shifted = (true_freqs * (1.0 + r)).tolist()
-            grid.append(("center_shift_ratio", r, {"prior": {"f_center_hz": shifted}}))
-        return grid
+    if experiment == "exp5_relative_half_band":
+        values = [0.01, 0.02, 0.05, 0.08, 0.10]
+        return [("relative_half_band", v, {"frequency": {"relative_half_band": v}}) for v in values]
 
-    if experiment == "exp5b_prior_band":
-        values = [5, 10, 15, 30, 50, 100]
-        return [("f_band_hz", v, {"prior": {"f_band_hz": v}}) for v in values]
+    if experiment == "exp6_sequence_posterior_samples":
+        values = [1, 2, 4]
+        return [
+            (
+                "sequence_posterior_samples",
+                v,
+                {"loss": {"reconstruction": {"sequence_posterior_samples": v}}},
+            )
+            for v in values
+        ]
 
-    if experiment == "exp5c_speed_fluctuation":
-        values = [0.0, 0.003, 0.006, 0.009, 0.012, 0.015, 0.018, 0.025, 0.05]
-        return [("fluctuation_delta", v, {"data": {"fluctuation_delta": v}}) for v in values]
+    if experiment == "exp7_amp_prior_band":
+        values = [0.0, 0.1, 0.2, 0.4]
+        return [
+            (
+                "amp_relative_half_band",
+                v,
+                {"signal": {"amp_data_prior": {"relative_half_band": v}}},
+            )
+            for v in values
+        ]
 
     raise ValueError(f"Unknown experiment: {experiment}")
 
@@ -150,24 +130,15 @@ def run_grid(args):
     base_cfg.setdefault("training", {})
     base_cfg["training"]["early_stopping"] = {
         "enabled": True,
-        "monitor": "freq_rmse_hz",
+        "monitor": args.monitor,
         "mode": "min",
         "patience": 3,
         "min_delta": 0.0,
     }
     base_cfg.setdefault("loss", {})
-    base_cfg["loss"]["freq_success_tol_hz"] = args.freq_tol_hz
-    base_cfg["loss"]["amp_success_tol_m"] = args.amp_tol_m
-
-    base_cfg.setdefault("prior", {})
-    base_cfg["prior"].setdefault("f_center_hz", base_cfg["signal"]["freqs_hz"])
-    base_cfg["prior"].setdefault("f_band_hz", 15.0)
-    if args.pure_ls:
-        base_cfg.setdefault("model", {})
-        base_cfg.setdefault("loss", {})
-        base_cfg["model"]["use_amp_residual"] = False
-        base_cfg["model"]["amp_residual_gamma"] = 0.0
-        base_cfg["loss"]["residual_weight"] = 0.0
+    base_cfg["loss"].setdefault("success", {})
+    base_cfg["loss"]["success"]["freq_relative_tol"] = args.freq_relative_tol
+    base_cfg["loss"]["success"]["amp_relative_tol"] = args.amp_relative_tol
 
     grid = build_experiment_grid(args.experiment, base_cfg)
     if args.seeds:
@@ -196,7 +167,6 @@ def run_grid(args):
             cfg["checkpoint"]["dir"] = str(run_dir / "checkpoints")
             cfg["checkpoint"]["name"] = "latest.pt"
             cfg["checkpoint"]["resume_from"] = None
-
             cfg["logging"]["tensorboard_dir"] = str(run_dir / "tensorboard")
             cfg["logging"]["curve_dir"] = str(run_dir / "curves")
 
@@ -208,7 +178,6 @@ def run_grid(args):
                 f"experiment={args.experiment} "
                 f"{factor_name}={factor_value} seed={seed}"
             )
-
             train_main.CONFIG = cfg
             train_main.main()
 
@@ -217,11 +186,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--experiment", type=str, required=True)
-    parser.add_argument("--result_root", type=str, default="/content/drive/MyDrive/deepmusic_results/v3")
+    parser.add_argument("--result_root", type=str, default="artifacts/v3/prior_sampling")
     parser.add_argument("--seeds", type=str, default=None)
-    parser.add_argument("--freq_tol_hz", type=float, default=1.0)
-    parser.add_argument("--amp_tol_m", type=float, default=1e-4)
-    parser.add_argument("--pure_ls", action="store_true")
+    parser.add_argument("--freq_relative_tol", type=float, default=0.02)
+    parser.add_argument("--amp_relative_tol", type=float, default=0.05)
+    parser.add_argument("--monitor", type=str, default="freq_rmse_hz_mean")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     run_grid(args)

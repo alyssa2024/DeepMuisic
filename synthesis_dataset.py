@@ -9,6 +9,7 @@ def simulate_fluctuating_speed_btt(
     base_freq_x=150.0,
     delta=0.018,
     probe_angles=[0, 45, 100, 185],
+    rng=None,
 ):
     """
     Generate non-uniform BTT sampling times under fluctuating rotational speed.
@@ -24,7 +25,8 @@ def simulate_fluctuating_speed_btt(
     probe_angles_rad = np.radians(probe_angles)
 
     # 1) Generate per-revolution rotational frequency (Hz)
-    fluctuations = np.random.uniform(-delta, delta, n_revs)
+    rng = np.random.default_rng() if rng is None else rng
+    fluctuations = rng.uniform(-delta, delta, n_revs)
     freqs_per_rev = base_freq_x * (1 + fluctuations)
 
     # 2) Build absolute start time for each revolution
@@ -62,7 +64,14 @@ def simulate_fluctuating_speed_btt(
     )
 
 
-def generate_complex_harmonic_displacement(t, freqs, amp_real, amp_imag, snr_db=None):
+def generate_complex_harmonic_displacement(
+    t,
+    freqs,
+    amp_real,
+    amp_imag,
+    snr_db=None,
+    rng=None,
+):
     """
     Generate complex blade displacement with a multi-harmonic model.
 
@@ -79,14 +88,15 @@ def generate_complex_harmonic_displacement(t, freqs, amp_real, amp_imag, snr_db=
 
     # Add complex Gaussian white noise if requested
     if snr_db is not None:
+        rng = np.random.default_rng() if rng is None else rng
         # Signal power
         sig_power = np.mean(np.abs(x_t) ** 2)
         # Noise power from target SNR
         noise_power = sig_power / (10 ** (snr_db / 10))
 
         # Complex Gaussian noise (real and imag each take half variance)
-        noise_real = np.sqrt(noise_power / 2) * np.random.randn(len(t))
-        noise_imag = np.sqrt(noise_power / 2) * np.random.randn(len(t))
+        noise_real = np.sqrt(noise_power / 2) * rng.standard_normal(len(t))
+        noise_imag = np.sqrt(noise_power / 2) * rng.standard_normal(len(t))
         noise = noise_real + 1j * noise_imag
 
         x_t_noisy = x_t + noise
@@ -94,6 +104,116 @@ def generate_complex_harmonic_displacement(t, freqs, amp_real, amp_imag, snr_db=
         x_t_noisy = x_t
 
     return x_t_noisy, x_t
+
+
+def compute_frequency_support(freq_center_hz, relative_half_band):
+    centers = np.asarray(freq_center_hz, dtype=np.float64)
+    rel = np.asarray(relative_half_band, dtype=np.float64)
+
+    if rel.ndim == 0:
+        rel = np.full_like(centers, float(rel))
+
+    if rel.shape != centers.shape:
+        raise ValueError(
+            f"relative_half_band shape {rel.shape} must be scalar or match centers {centers.shape}"
+        )
+
+    half_band = rel * centers
+    lower = centers - half_band
+    upper = centers + half_band
+
+    if np.any(lower <= 0):
+        raise ValueError("frequency lower bound must be positive")
+
+    if np.any(upper[:-1] >= lower[1:]):
+        raise ValueError(
+            f"overlapping frequency supports: upper[:-1]={upper[:-1]}, "
+            f"lower[1:]={lower[1:]}"
+        )
+
+    return lower, upper, centers, half_band
+
+
+def sample_frequency_uniform(freq_lower, freq_upper, rng):
+    freq_lower = np.asarray(freq_lower, dtype=np.float64)
+    freq_upper = np.asarray(freq_upper, dtype=np.float64)
+    return rng.uniform(freq_lower, freq_upper)
+
+
+def sample_amplitude_uniform(
+    amp_real_center,
+    amp_imag_center,
+    relative_half_band,
+    min_half_band,
+    rng,
+):
+    amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
+    amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
+
+    real_half = relative_half_band * np.maximum(
+        np.abs(amp_real_center),
+        min_half_band,
+    )
+    imag_half = relative_half_band * np.maximum(
+        np.abs(amp_imag_center),
+        min_half_band,
+    )
+
+    amp_real = rng.uniform(
+        amp_real_center - real_half,
+        amp_real_center + real_half,
+    )
+    amp_imag = rng.uniform(
+        amp_imag_center - imag_half,
+        amp_imag_center + imag_half,
+    )
+
+    return amp_real, amp_imag
+
+
+def generate_one_btt_sequence(
+    num_cycles,
+    base_freq,
+    fluctuation_delta,
+    probe_angles,
+    freq_hz,
+    amp_real,
+    amp_imag,
+    snr_db,
+    rng=None,
+):
+    rng = np.random.default_rng() if rng is None else rng
+    t_samples, freqs_per_rev, rev_ids, probe_ids, theta_samples, freqs_at_samples = (
+        simulate_fluctuating_speed_btt(
+            n_revs=num_cycles,
+            base_freq_x=base_freq,
+            delta=fluctuation_delta,
+            probe_angles=probe_angles,
+            rng=rng,
+        )
+    )
+
+    x_observed, x_clean = generate_complex_harmonic_displacement(
+        t=t_samples,
+        freqs=freq_hz,
+        amp_real=amp_real,
+        amp_imag=amp_imag,
+        snr_db=snr_db,
+        rng=rng,
+    )
+
+    return {
+        "x_observed": x_observed,
+        "x_clean": x_clean,
+        "t_samples": t_samples,
+        "rev_ids": rev_ids,
+        "probe_ids": probe_ids,
+        "theta_samples": theta_samples,
+        "freqs_at_samples": freqs_at_samples,
+        "freq_hz": freq_hz,
+        "amp_real": amp_real,
+        "amp_imag": amp_imag,
+    }
 
 
 # ==========================================

@@ -2,8 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-import gin
 import numpy as np
+
+try:
+    import gin
+except ImportError:
+    class _GinFallback:
+        @staticmethod
+        def configurable(obj):
+            return obj
+
+    gin = _GinFallback()
 
 
 class PositionalEncoding(torch.nn.Module):
@@ -41,8 +50,10 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         use_standard_pe=False,
         causal_mask=False,
         device="cpu",
-        f_center_hz=None,
-        f_band_hz=15.0,
+        freq_lower_hz=None,
+        freq_upper_hz=None,
+        min_log_rho2=-12.0,
+        max_log_rho2=-4.0,
         **kwargs,
     ):
         super().__init__()
@@ -82,17 +93,38 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         self._device = device
         self._causal_mask = causal_mask
-        if f_center_hz is None:
-            f_center_hz = [167.0, 341.0, 635.0, 872.0]
-        if len(f_center_hz) != output_dim:
+        if freq_lower_hz is None:
+            freq_lower_hz = np.asarray([167.0, 341.0, 635.0, 872.0]) * 0.95
+        if freq_upper_hz is None:
+            freq_upper_hz = np.asarray([167.0, 341.0, 635.0, 872.0]) * 1.05
+        if len(freq_lower_hz) != output_dim:
             raise ValueError(
-                f"len(f_center_hz)={len(f_center_hz)} must equal output_dim={output_dim}"
+                f"len(freq_lower_hz)={len(freq_lower_hz)} must equal output_dim={output_dim}"
             )
+        if len(freq_upper_hz) != output_dim:
+            raise ValueError(
+                f"len(freq_upper_hz)={len(freq_upper_hz)} must equal output_dim={output_dim}"
+            )
+        freq_lower = torch.tensor(freq_lower_hz, dtype=torch.float32)
+        freq_upper = torch.tensor(freq_upper_hz, dtype=torch.float32)
+        if torch.any(freq_lower <= 0):
+            raise ValueError("frequency lower bounds must be positive")
+        if torch.any(freq_upper <= freq_lower):
+            raise ValueError("frequency upper bounds must exceed lower bounds")
+
+        self.register_buffer("freq_lower", freq_lower)
+        self.register_buffer("freq_upper", freq_upper)
+        self.register_buffer("freq_mid", 0.5 * (freq_lower + freq_upper))
+        self.register_buffer("freq_half", 0.5 * (freq_upper - freq_lower))
+        self.min_log_rho2 = float(min_log_rho2)
+        self.max_log_rho2 = float(max_log_rho2)
+
+        # Backward-compatible aliases for diagnostics.
+        self.register_buffer("f_center", 0.5 * (freq_lower + freq_upper))
         self.register_buffer(
-            "f_center",
-            torch.tensor(f_center_hz, dtype=torch.float32),
+            "f_band",
+            0.5 * (freq_upper - freq_lower),
         )
-        self.f_band = float(f_band_hz)
 
     def generate_causal_mask(self, seq_len):
         # Upper triangular mask: (seq_len, seq_len)
@@ -132,7 +164,18 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         y = F.relu(self._fc(pooled))  # [B, hidden_dim_dense]
 
         raw_f_mu = self._fc_f_mu(y)
-        mu_f = self.f_center + self.f_band * torch.tanh(raw_f_mu)
-        logvar_f = torch.clamp(self._fc_f_logvar(y), min=-14.0, max=-6.0)
+        raw_logrho2_f = self._fc_f_logvar(y)
 
-        return (mu_f, logvar_f)
+        mu_unit = torch.tanh(raw_f_mu)
+        mu_f = self.freq_mid + self.freq_half * mu_unit
+
+        log_rho2 = torch.clamp(
+            raw_logrho2_f,
+            min=self.min_log_rho2,
+            max=self.max_log_rho2,
+        )
+        rho = torch.exp(0.5 * log_rho2)
+        std_f = self.freq_half * rho
+        logvar_f = 2.0 * torch.log(std_f + 1e-12)
+
+        return mu_f, logvar_f, std_f

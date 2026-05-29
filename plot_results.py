@@ -74,13 +74,12 @@ def collect_results(result_root, metric_source="last"):
 
 PLOT_META = {
     "exp1_snr": ("SNR (dB)", "SNR robustness"),
-    "exp2_n_revs": ("Total revolutions", "Data length"),
-    "exp3a_window_revs": ("Window size (revolutions)", "Window size"),
-    "exp3b_num_probes": ("Number of probes", "Probe number"),
+    "exp2_num_cycles": ("Cycles per sequence", "Sequence length"),
+    "exp3_num_probes": ("Number of probes", "Probe number"),
     "exp4_num_harmonics": ("Number of sinusoids K", "Number of sinusoids"),
-    "exp5a_prior_center_shift": ("Center shift ratio", "Prior center mismatch"),
-    "exp5b_prior_band": ("Prior band width (Hz)", "Prior band width"),
-    "exp5c_speed_fluctuation": ("Speed fluctuation delta", "Speed fluctuation"),
+    "exp5_relative_half_band": ("Relative half band", "Frequency search band"),
+    "exp6_sequence_posterior_samples": ("Posterior samples per sequence", "Posterior sampling"),
+    "exp7_amp_prior_band": ("Amplitude relative half band", "Amplitude prior band"),
 }
 
 
@@ -88,6 +87,9 @@ def plot_metric(df, experiment, metric, ylabel, out_dir):
     sub = df[df["experiment"] == experiment].copy()
     if sub.empty:
         print(f"[WARN] No data for {experiment}")
+        return
+    if metric not in sub.columns:
+        print(f"[WARN] Metric {metric} missing for {experiment}")
         return
 
     grouped = sub.groupby(["model_name", "x_value"])[metric].agg(["mean", "std"]).reset_index().sort_values("x_value")
@@ -142,8 +144,10 @@ def main():
 
     experiments = sorted(df["experiment"].unique())
     for exp in experiments:
-        plot_metric(df, experiment=exp, metric="freq_rmse_hz", ylabel="Frequency RMSE (Hz)", out_dir=plot_dir)
-        plot_metric(df, experiment=exp, metric="detection_success_rate", ylabel="Detection success rate", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="freq_rmse_hz_mean", ylabel="Frequency RMSE (Hz)", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="freq_success_rate_mean", ylabel="Frequency success rate", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="amp_success_rate_mean", ylabel="Amplitude success rate", out_dir=plot_dir)
+        plot_metric(df, experiment=exp, metric="joint_success_rate_mean", ylabel="Joint success rate", out_dir=plot_dir)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Centralized project configuration.
 
 Edit values here, then run `main.py`.
@@ -10,70 +10,97 @@ CONFIG = {
         "input_dim": 6,
         "num_harmonics": 4,
         "num_probes": 4,
-        "base_freq": 150.0,  # Theoretical maximum detectable frequency is about 975 Hz
+        "base_freq": 150.0,
         "fluctuation_delta": 0.001,
-        "probes": [0, 28, 111.08, 166.15],  # Physical installation angles (deg)
-        "n_revs": 20000,
-        "window_revs": 8,
-        "hop_revs": 2,
-        "amp_agg_patches": 8,
-        "amp_agg_mode": "center",
+        "probes": [0, 28, 111.08, 166.15],
+        "num_cycles": 8,
+        "num_train_sequences": 10000,
+        "num_val_sequences": 2000,
+        "num_test_sequences": 2000,
         "batch_size": 16,
+        "normalization": "per_sequence_std",
     },
     "signal": {
-        "freqs_hz": [167.0, 341.0, 635.0, 872.0],
-        "amp_real_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
-        "amp_imag_m": [0.0, 0.0008415, 0.0007274, 0.0001270],
+        "amp_real_center_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
+        "amp_imag_center_m": [0.0, 0.0008415, 0.0007274, 0.0001270],
+        "amp_data_prior": {
+            "type": "independent_uniform",
+            "relative_half_band": 0.2,
+            "min_half_band_m": 1e-5,
+        },
         "snr_db": 20,
+    },
+    "frequency": {
+        "center_hz": [167.0, 341.0, 635.0, 872.0],
+        "relative_half_band": 0.05,
+        "data_prior": {
+            "type": "uniform",
+        },
+        "model_search": {
+            "type": "relative_band",
+        },
+        "posterior": {
+            "type": "range_scaled_gaussian",
+            "min_log_rho2": -12.0,
+            "max_log_rho2": -4.0,
+        },
+        "loss_prior": {
+            "type": "uniform_support_regularizer",
+            "outside_penalty": 1.0,
+        },
     },
     "model": {
         "hidden_dim": 128,
         "nhead": 8,
-        "num_layers": 2,
+        "num_layers": 1,
         "dim_feedforward": 256,
         "hidden_dim_dense": 256,
         "use_standard_pe": False,
         "ls_ridge": 1e-5,
-        "use_amp_residual": True,
-        "amp_residual_hidden": 128,
-        "amp_residual_gamma": 0.0,
-        "use_freq_mean_for_ls": False,
+    },
+    "loss": {
+        "beta_freq": 1e-5,
+        "reconstruction": {
+            "use_posterior_sampling": True,
+            "sequence_posterior_samples": 1,
+            "sample_at_train": True,
+            "eval_at_mean": True,
+        },
+        "kl": {
+            "enabled": False,
+            "warmup_steps": 0,
+            "reuse_reconstruction_samples": True,
+        },
+        "success": {
+            "freq_relative_tol": 0.02,
+            "amp_relative_tol": 0.05,
+        },
     },
     "training": {
         "epochs": 50,
         "lr": 1e-4,
-        "max_grad_norm": 0.1,
+        "grad_clip": {
+            "enabled": False,
+            "max_norm": 1.0,
+        },
         "early_stopping": {
             "enabled": True,
-            "monitor": "recon_btt_mse",
+            "monitor": "recon_mse_mean",
             "mode": "min",
             "patience": 3,
             "min_delta": 1e-6,
         },
     },
     "eval": {
-        "val_ratio": 0.2,
         "eval_every": 5,
         "dense_factor": 4,
-        "target_recon_btt_mse": 0.1,
-        "split_seed": 42,
-    },
-    "loss": {
-        "beta": 1e-5,
-        "use_kl_w": True,
-        "residual_weight": 0.0,
-        "freq_success_tol_hz": 1.0,
-        "amp_success_tol_m": 1e-4,
-    },
-    "prior": {
-        "f_center_hz": [167.0, 341.0, 635.0, 872.0],
-        "f_band_hz": 15.0,
+        "target_recon_mse": 0.1,
     },
     "checkpoint": {
         "dir": "checkpoints",
         "name": "latest.pt",
         "save_every": 20,
-        "resume_from": None,  # Example: "checkpoints/latest.pt"
+        "resume_from": None,
     },
     "logging": {
         "enable_tensorboard": True,

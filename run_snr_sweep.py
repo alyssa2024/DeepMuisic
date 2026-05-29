@@ -24,7 +24,7 @@ def reset_config():
 
 
 def run():
-    root = "artifacts/v3/complex_ls/exp1_snr"
+    root = "artifacts/v3/prior_sampling/exp1_snr"
 
     for snr_db in SNR_VALUES:
         for seed in SEEDS:
@@ -36,13 +36,9 @@ def run():
             CONFIG["signal"]["snr_db"] = snr_db
             CONFIG["run_dir"] = run_dir
 
-            CONFIG["model"]["use_amp_residual"] = False
-            CONFIG["model"]["amp_residual_gamma"] = 0.0
-            CONFIG["loss"]["residual_weight"] = 0.0
-
             CONFIG["training"]["early_stopping"] = {
                 "enabled": True,
-                "monitor": "freq_rmse_hz",
+                "monitor": "freq_rmse_hz_mean",
                 "mode": "min",
                 "patience": 3,
                 "min_delta": 0.0,
