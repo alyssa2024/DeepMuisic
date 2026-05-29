@@ -50,7 +50,6 @@ def evaluate_model(
         "loss": 0.0,
         "recon_mse_mean": 0.0,
         "recon_mse_sampled": 0.0,
-        "nan_or_inf_rate": 0.0,
     }
 
     success_cfg = loss_cfg.get("success", {})
@@ -65,8 +64,6 @@ def evaluate_model(
     total_sequences = 0
     total_freq_elements = 0
     total_order_pairs = 0
-    bad_batches = 0
-    total_batches = 0
     num_harmonics = None
 
     freq_sqerr_sum = None
@@ -85,6 +82,7 @@ def evaluate_model(
 
     freq_sequence_success_sum = 0.0
     amp_sequence_success_sum = 0.0
+    joint_amp_freq_sequence_success_sum = 0.0
     complex_sequence_success_sum = 0.0
     complex_vector_rel_err_sum = 0.0
     harmonic_order_success_sum = 0.0
@@ -102,7 +100,6 @@ def evaluate_model(
 
     with torch.no_grad():
         for batch in dataloader:
-            total_batches += 1
             x_batch = batch["x"].to(device)
             t_batch = batch["t"].to(device)
             probe_ids = batch["probe_ids"].to(device)
@@ -206,9 +203,14 @@ def evaluate_model(
             freq_ok = freq_rel_err <= freq_relative_tol
             amp_ok = amp_mape <= amp_relative_tol
             complex_ok = complex_rel_err <= complex_coeff_relative_tol
+            joint_amp_freq_ok = freq_ok & amp_ok
 
             freq_success_rate = torch.all(freq_ok, dim=1).float().mean()
             amp_success_rate = torch.all(amp_ok, dim=1).float().mean()
+            joint_amp_freq_success_rate = torch.all(
+                joint_amp_freq_ok,
+                dim=1,
+            ).float().mean()
             complex_success_rate = torch.all(complex_ok, dim=1).float().mean()
 
             if k_count > 1:
@@ -218,14 +220,6 @@ def evaluate_model(
 
             beta_freq = float(loss_cfg.get("beta_freq", 1e-5))
             loss = recon_mse_sampled + beta_freq * freq_prior_reg
-
-            finite = (
-                torch.isfinite(loss)
-                and torch.isfinite(mu_f).all()
-                and torch.isfinite(recon_mse_mean)
-            )
-            if not finite:
-                bad_batches += 1
 
             total_sequences += n
             total_freq_elements += n * k_count
@@ -251,6 +245,7 @@ def evaluate_model(
 
             freq_sequence_success_sum += freq_success_rate.item() * n
             amp_sequence_success_sum += amp_success_rate.item() * n
+            joint_amp_freq_sequence_success_sum += joint_amp_freq_success_rate.item() * n
             complex_sequence_success_sum += complex_success_rate.item() * n
             complex_vector_rel_err_sum += complex_vector_rel_err.sum().item()
 
@@ -267,10 +262,7 @@ def evaluate_model(
 
     total_sequences = max(total_sequences, 1)
     for key in stats:
-        if key == "nan_or_inf_rate":
-            continue
         stats[key] /= total_sequences
-    stats["nan_or_inf_rate"] = bad_batches / max(total_batches, 1)
 
     if num_harmonics is None:
         return stats
@@ -313,7 +305,10 @@ def evaluate_model(
             "freq_sample_outside_rate": freq_sample_outside_sum / total_sequences,
             "freq_prior_reg": freq_prior_reg_sum / total_sequences,
             "amp_mape_mean": float(amp_mape_sum.sum() / total_freq_elements),
-            "amp_success_rate_magnitude": amp_sequence_success_sum / total_sequences,
+            "amp_success_rate_mean": amp_sequence_success_sum / total_sequences,
+            "joint_amp_freq_success_rate_mean": (
+                joint_amp_freq_sequence_success_sum / total_sequences
+            ),
             "complex_coeff_rel_err_mean": float(
                 complex_rel_err_sum.sum() / total_freq_elements
             ),

@@ -65,7 +65,7 @@ def build_experiment_grid(experiment, base_cfg):
         return [("snr_db", v, {"signal": {"snr_db": v}}) for v in values]
 
     if experiment == "exp2_num_cycles":
-        values = [4, 8, 16, 32, 64]
+        values = [4, 8, 16, 32, 64, 128]
         return [("num_cycles", v, {"data": {"num_cycles": v}}) for v in values]
 
     if experiment == "exp3_num_probes":
@@ -98,7 +98,7 @@ def build_experiment_grid(experiment, base_cfg):
         return [("relative_half_band", v, {"frequency": {"relative_half_band": v}}) for v in values]
 
     if experiment == "exp6_sequence_posterior_samples":
-        values = [1, 2, 4]
+        values = [1, 2, 4, 8, 10]
         return [
             (
                 "sequence_posterior_samples",

@@ -81,7 +81,8 @@ def _save_training_curves(history, output_dir):
         ],
         "eval_success.png": [
             ("eval/freq_success_rate_mean", "freq_success"),
-            ("eval/amp_success_rate_magnitude", "amp_success_mag"),
+            ("eval/amp_success_rate_mean", "amp_success"),
+            ("eval/joint_amp_freq_success_rate_mean", "joint_amp_freq"),
             ("eval/complex_coeff_success_rate", "complex_success"),
         ],
         "eval_coefficients.png": [
@@ -467,7 +468,6 @@ def main():
                 else:
                     epochs_without_improvement += 1
 
-                train_nan_or_inf_rate = nonfinite_steps / max(total_steps + nonfinite_steps, 1)
                 grad_clip_ratio = grad_clip_triggered_steps / max(total_steps, 1)
 
                 print(
@@ -480,7 +480,8 @@ def main():
                     f"freq_nrmse_band_mean={val_metrics['freq_nrmse_band_mean']:.4f} "
                     f"freq_success={val_metrics['freq_success_rate_mean']:.4f} "
                     f"amp_mape={val_metrics['amp_mape_mean']:.4f} "
-                    f"amp_success_mag={val_metrics['amp_success_rate_magnitude']:.4f} "
+                    f"amp_success={val_metrics['amp_success_rate_mean']:.4f} "
+                    f"joint_amp_freq_success={val_metrics['joint_amp_freq_success_rate_mean']:.4f} "
                     f"phase_mae={val_metrics['phase_circ_mae_rad']:.4f} "
                     f"complex_rel_err={val_metrics['complex_coeff_rel_err_mean']:.4f} "
                     f"complex_success={val_metrics['complex_coeff_success_rate']:.4f} "
@@ -488,8 +489,6 @@ def main():
                     f"outside={val_metrics['freq_sample_outside_rate']:.4f} "
                     f"ls_cond_p95={val_metrics['ls_cond_p95']:.3e} "
                     f"ls_amp_norm_p95={val_metrics['ls_amp_norm_p95']:.3e} "
-                    f"val_nan_or_inf_rate={val_metrics['nan_or_inf_rate']:.6f} "
-                    f"train_nan_or_inf_rate={train_nan_or_inf_rate:.6f} "
                     f"grad_clip_ratio={grad_clip_ratio:.6f} "
                     f"epoch_to_target={epoch_to_target if epoch_to_target is not None else -1}"
                 )
