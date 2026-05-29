@@ -7,8 +7,7 @@ import main as train_main
 from config import CONFIG
 
 
-NUM_CYCLES_VALUES = [4, 8, 16, 32, 64, 128]
-SEQUENCE_POSTERIOR_SAMPLE_VALUES = [1, 2, 4, 8, 10]
+NUM_CYCLES_VALUES = [4, 8, 12, 16, 32]
 
 
 def deep_update(d, u):
@@ -25,21 +24,13 @@ def safe_name(x):
     return str(x).replace("-", "m").replace(".", "p")
 
 
-def build_sweeps():
-    return [
-        (
-            "num_cycles",
-            "num_cycles",
-            NUM_CYCLES_VALUES,
-            lambda v: {"data": {"num_cycles": v}},
-        ),
-        (
-            "sequence_posterior_samples",
-            "sequence_posterior_samples",
-            SEQUENCE_POSTERIOR_SAMPLE_VALUES,
-            lambda v: {"loss": {"reconstruction": {"sequence_posterior_samples": v}}},
-        ),
-    ]
+def build_sweep():
+    return (
+        "num_cycles",
+        "num_cycles",
+        NUM_CYCLES_VALUES,
+        lambda v: {"data": {"num_cycles": v}},
+    )
 
 
 def prepare_base_config(args):
@@ -85,7 +76,7 @@ def run_one(cfg, run_dir, force):
     train_main.main()
 
 
-def run_sweeps(args):
+def run_sweep(args):
     base_cfg = prepare_base_config(args)
     if args.seeds:
         seeds = [int(s) for s in args.seeds.split(",")]
@@ -93,36 +84,36 @@ def run_sweeps(args):
         seeds = [int(s) for s in base_cfg.get("experiment", {}).get("seeds", [0])]
 
     result_root = Path(args.result_root) / args.model_name
+    sweep_name, factor_name, values, override_fn = build_sweep()
 
-    for sweep_name, factor_name, values, override_fn in build_sweeps():
-        for value in values:
-            for seed in seeds:
-                cfg = deep_update(base_cfg, override_fn(value))
-                cfg["seed"] = seed
-                cfg["model_name"] = args.model_name
-                cfg["sweep_name"] = sweep_name
-                cfg["sweep_factor"] = factor_name
-                cfg["sweep_value"] = value
+    for value in values:
+        for seed in seeds:
+            cfg = deep_update(base_cfg, override_fn(value))
+            cfg["seed"] = seed
+            cfg["model_name"] = args.model_name
+            cfg["sweep_name"] = sweep_name
+            cfg["sweep_factor"] = factor_name
+            cfg["sweep_value"] = value
 
-                run_dir = (
-                    result_root
-                    / sweep_name
-                    / f"{factor_name}_{safe_name(value)}"
-                    / f"seed_{seed}"
-                )
-                print(
-                    f"[RUN] model={args.model_name} "
-                    f"sweep={sweep_name} {factor_name}={value} seed={seed}"
-                )
-                run_one(cfg, run_dir, force=args.force)
+            run_dir = (
+                result_root
+                / sweep_name
+                / f"{factor_name}_{safe_name(value)}"
+                / f"seed_{seed}"
+            )
+            print(
+                f"[RUN] model={args.model_name} "
+                f"sweep={sweep_name} {factor_name}={value} seed={seed}"
+            )
+            run_one(cfg, run_dir, force=args.force)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Run stage-1 sweeps for sequence length and posterior sample count."
+        description="Run stage-1 sweep for short sequence length."
     )
     parser.add_argument("--model_name", type=str, default="stage1_prior_sampling")
-    parser.add_argument("--result_root", type=str, default="artifacts/v3/stage1_sweeps")
+    parser.add_argument("--result_root", type=str, default="artifacts/v3/stage1_sweep")
     parser.add_argument("--seeds", type=str, default=None)
     parser.add_argument("--freq_relative_tol", type=float, default=0.02)
     parser.add_argument("--amp_relative_tol", type=float, default=0.05)
@@ -132,4 +123,4 @@ if __name__ == "__main__":
     parser.add_argument("--early_min_delta", type=float, default=0.0)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    run_sweeps(args)
+    run_sweep(args)

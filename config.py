@@ -42,7 +42,7 @@ CONFIG = {
         "posterior": {
             "type": "range_scaled_gaussian",
             "min_log_rho2": -12.0,
-            "max_log_rho2": -4.0,
+            "max_log_rho2": -6.0,
         },
         "loss_prior": {
             "type": "uniform_support_regularizer",
@@ -62,7 +62,7 @@ CONFIG = {
         "beta_freq": 1e-5,
         "reconstruction": {
             "use_posterior_sampling": True,
-            "sequence_posterior_samples": 1,
+            "sequence_posterior_samples": 2,
             "sample_at_train": True,
             "eval_at_mean": True,
         },
