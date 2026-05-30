@@ -53,10 +53,11 @@ def prepare_base_config(args):
     return base_cfg
 
 
-def run_one(cfg, run_dir, force):
+def run_one(cfg, run_dir, force, resume_from=None, resume_each=False):
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = run_dir / "metrics.json"
-    if metrics_path.exists() and not force:
+    resume_requested = resume_each or resume_from is not None
+    if metrics_path.exists() and not force and not resume_requested:
         print(f"[SKIP] {metrics_path}")
         return
 
@@ -65,7 +66,15 @@ def run_one(cfg, run_dir, force):
     cfg.setdefault("logging", {})
     cfg["checkpoint"]["dir"] = str(run_dir / "checkpoints")
     cfg["checkpoint"]["name"] = "latest.pt"
-    cfg["checkpoint"]["resume_from"] = None
+    if resume_each:
+        run_checkpoint = run_dir / "checkpoints" / "latest.pt"
+        if run_checkpoint.exists():
+            cfg["checkpoint"]["resume_from"] = str(run_checkpoint)
+        else:
+            cfg["checkpoint"]["resume_from"] = None
+            print(f"[WARN] No checkpoint for this run, starting fresh: {run_checkpoint}")
+    else:
+        cfg["checkpoint"]["resume_from"] = resume_from
     cfg["logging"]["tensorboard_dir"] = str(run_dir / "tensorboard")
     cfg["logging"]["curve_dir"] = str(run_dir / "curves")
 
@@ -105,7 +114,13 @@ def run_sweep(args):
                 f"[RUN] model={args.model_name} "
                 f"sweep={sweep_name} {factor_name}={value} seed={seed}"
             )
-            run_one(cfg, run_dir, force=args.force)
+            run_one(
+                cfg,
+                run_dir,
+                force=args.force,
+                resume_from=args.resume_from,
+                resume_each=args.resume_each,
+            )
 
 
 if __name__ == "__main__":
@@ -121,6 +136,17 @@ if __name__ == "__main__":
     parser.add_argument("--monitor", type=str, default="freq_rmse_hz_mean")
     parser.add_argument("--early_patience", type=int, default=3)
     parser.add_argument("--early_min_delta", type=float, default=0.0)
+    parser.add_argument(
+        "--resume_from",
+        type=str,
+        default=None,
+        help="Optional checkpoint path to resume every sweep run from.",
+    )
+    parser.add_argument(
+        "--resume_each",
+        action="store_true",
+        help="Resume each sweep run from its own run_dir/checkpoints/latest.pt if present.",
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     run_sweep(args)

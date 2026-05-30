@@ -35,15 +35,33 @@ def collect_results(result_root, metric_source="last"):
                 cfg = json.load(f)
 
         rel = metrics_path.relative_to(result_root).parts
-        model_name = rel[0] if len(rel) > 0 else cfg.get("model_name", "unknown")
-        experiment = rel[1] if len(rel) > 1 else "unknown"
-        factor_dir = rel[2] if len(rel) > 2 else "unknown"
-        seed_dir = rel[3] if len(rel) > 3 else "seed_unknown"
 
-        factor_name, x_value = parse_factor_dir(factor_dir)
+        model_name = cfg.get("model_name")
+        experiment = cfg.get("sweep_name")
+        factor_name = cfg.get("sweep_factor")
+        x_value = cfg.get("sweep_value")
+
+        if model_name is None:
+            model_name = rel[0] if len(rel) > 0 else "unknown"
+        if experiment is None:
+            experiment = rel[1] if len(rel) > 1 else "unknown"
+
+        if factor_name is None or x_value is None:
+            if len(rel) >= 3:
+                factor_name, x_value = parse_factor_dir(rel[2])
+            elif len(rel) >= 2:
+                factor_name, x_value = parse_factor_dir(rel[1])
+            else:
+                factor_name, x_value = "unknown", "unknown"
+
+        seed_dir = cfg.get("seed")
+        if seed_dir is None:
+            seed_dir = rel[-2] if len(rel) >= 2 else "seed_unknown"
+        else:
+            seed_dir = f"seed_{seed_dir}"
 
         row = {
-            "model_name": cfg.get("model_name", model_name),
+            "model_name": model_name,
             "experiment": experiment,
             "factor_name": factor_name,
             "x_value": x_value,
@@ -54,10 +72,9 @@ def collect_results(result_root, metric_source="last"):
             row.update(metrics["best_metrics"])
             # Keep summary metadata from the top-level payload for reference.
             for k in (
-                "best_epoch_by_freq_rmse",
-                "best_freq_rmse_hz",
-                "last_freq_rmse_hz",
-                "freq_rmse_degradation_ratio",
+                "best_epoch_by_monitor",
+                "best_monitor_value",
+                "last_monitor_value",
                 "early_stopped",
                 "early_stop_epoch",
                 "early_stopping_patience",
@@ -73,6 +90,7 @@ def collect_results(result_root, metric_source="last"):
 
 
 PLOT_META = {
+    "num_cycles": ("Cycles per sequence", "Sequence length"),
     "exp1_snr": ("SNR (dB)", "SNR robustness"),
     "exp2_num_cycles": ("Cycles per sequence", "Sequence length"),
     "exp3_num_probes": ("Number of probes", "Probe number"),
@@ -80,6 +98,7 @@ PLOT_META = {
     "exp5_relative_half_band": ("Relative half band", "Frequency search band"),
     "exp6_sequence_posterior_samples": ("Posterior samples per sequence", "Posterior sampling"),
     "exp7_amp_prior_band": ("Amplitude relative half band", "Amplitude prior band"),
+    "exp8_max_log_rho2": ("max_log_rho2", "Posterior frequency std upper bound"),
 }
 
 
@@ -125,7 +144,7 @@ def plot_metric(df, experiment, metric, ylabel, out_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--result_root", type=str, default="/content/drive/MyDrive/deepmusic_results/v3")
+    parser.add_argument("--result_root", type=str, default="artifacts/v3/stage1_sweep")
     parser.add_argument("--metric_source", type=str, choices=["last", "best"], default="last")
     args = parser.parse_args()
 

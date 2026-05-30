@@ -119,7 +119,43 @@ def build_experiment_grid(experiment, base_cfg):
             for v in values
         ]
 
+    if experiment == "exp8_max_log_rho2":
+        values = [-5.0, -6.0, -7.0]
+        return [
+            (
+                "max_log_rho2",
+                v,
+                {"frequency": {"posterior": {"max_log_rho2": v}}},
+            )
+            for v in values
+        ]
+
     raise ValueError(f"Unknown experiment: {experiment}")
+
+
+def resolve_stage1_num_cycles_checkpoint(args, seed):
+    checkpoint_path = (
+        Path(args.stage1_sweep_root)
+        / args.stage1_model_name
+        / "num_cycles"
+        / f"num_cycles_{safe_name(args.stage1_num_cycles)}"
+        / f"seed_{seed}"
+        / "checkpoints"
+        / args.stage1_checkpoint_name
+    )
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Stage-1 checkpoint not found: {checkpoint_path}")
+    return checkpoint_path
+
+
+def set_extra_epochs_from_checkpoint(cfg, checkpoint_path, extra_epochs):
+    import torch
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    start_epoch = int(checkpoint.get("epoch", -1)) + 1
+    cfg.setdefault("training", {})
+    cfg["training"]["epochs"] = start_epoch + int(extra_epochs)
+    return start_epoch, cfg["training"]["epochs"]
 
 
 def run_grid(args):
@@ -152,12 +188,28 @@ def run_grid(args):
             cfg = deep_update(base_cfg, overrides)
             cfg["seed"] = seed
             cfg["model_name"] = args.model_name
+            cfg["sweep_name"] = args.experiment
+            cfg["sweep_factor"] = factor_name
+            cfg["sweep_value"] = factor_value
 
             run_dir = result_root / f"{factor_name}_{safe_name(factor_value)}" / f"seed_{seed}"
             run_dir.mkdir(parents=True, exist_ok=True)
 
             metrics_path = run_dir / "metrics.json"
-            if metrics_path.exists() and not args.force:
+            resume_from = None
+            resume_start_epoch = None
+            resume_target_epochs = None
+            if args.resume_from_stage1_num_cycles_best:
+                resume_from = resolve_stage1_num_cycles_checkpoint(args, seed)
+                cfg.setdefault("data", {})
+                cfg["data"]["num_cycles"] = args.stage1_num_cycles
+                resume_start_epoch, resume_target_epochs = set_extra_epochs_from_checkpoint(
+                    cfg=cfg,
+                    checkpoint_path=resume_from,
+                    extra_epochs=args.extra_epochs,
+                )
+
+            if metrics_path.exists() and not args.force and resume_from is None:
                 print(f"[SKIP] {metrics_path}")
                 continue
 
@@ -167,7 +219,7 @@ def run_grid(args):
 
             cfg["checkpoint"]["dir"] = str(run_dir / "checkpoints")
             cfg["checkpoint"]["name"] = "latest.pt"
-            cfg["checkpoint"]["resume_from"] = None
+            cfg["checkpoint"]["resume_from"] = str(resume_from) if resume_from else None
             cfg["logging"]["tensorboard_dir"] = str(run_dir / "tensorboard")
             cfg["logging"]["curve_dir"] = str(run_dir / "curves")
 
@@ -179,6 +231,12 @@ def run_grid(args):
                 f"experiment={args.experiment} "
                 f"{factor_name}={factor_value} seed={seed}"
             )
+            if resume_from:
+                print(
+                    f"[RESUME] checkpoint={resume_from} "
+                    f"start_epoch={resume_start_epoch} "
+                    f"target_epochs={resume_target_epochs}"
+                )
             train_main.CONFIG = cfg
             train_main.main()
 
@@ -193,6 +251,16 @@ if __name__ == "__main__":
     parser.add_argument("--amp_relative_tol", type=float, default=0.05)
     parser.add_argument("--complex_coeff_relative_tol", type=float, default=0.05)
     parser.add_argument("--monitor", type=str, default="freq_rmse_hz_mean")
+    parser.add_argument(
+        "--resume_from_stage1_num_cycles_best",
+        action="store_true",
+        help="Resume each seed from run_stage1_sweep.py's num_cycles checkpoint.",
+    )
+    parser.add_argument("--stage1_sweep_root", type=str, default="artifacts/v3/stage1_sweep")
+    parser.add_argument("--stage1_model_name", type=str, default="stage1_prior_sampling")
+    parser.add_argument("--stage1_num_cycles", type=int, default=4)
+    parser.add_argument("--stage1_checkpoint_name", type=str, default="best_freq_rmse_hz_mean.pt")
+    parser.add_argument("--extra_epochs", type=int, default=50)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     run_grid(args)

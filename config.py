@@ -13,7 +13,7 @@ CONFIG = {
         "base_freq": 150.0,
         "fluctuation_delta": 0.001,
         "probes": [0, 28, 111.08, 166.15],
-        "num_cycles": 8,
+        "num_cycles": 4,
         "num_train_sequences": 10000,
         "num_val_sequences": 2000,
         "num_test_sequences": 2000,
@@ -42,7 +42,7 @@ CONFIG = {
         "posterior": {
             "type": "range_scaled_gaussian",
             "min_log_rho2": -12.0,
-            "max_log_rho2": -6.0,
+            "max_log_rho2": -7.0,
         },
         "loss_prior": {
             "type": "uniform_support_regularizer",
@@ -52,7 +52,7 @@ CONFIG = {
     "model": {
         "hidden_dim": 128,
         "nhead": 8,
-        "num_layers": 1,
+        "num_layers": 2,
         "dim_feedforward": 256,
         "hidden_dim_dense": 256,
         "use_standard_pe": False,
@@ -78,8 +78,13 @@ CONFIG = {
         },
     },
     "training": {
-        "epochs": 50,
+        "epochs": 150,
         "lr": 1e-4,
+        "lr_schedule": {
+            "type": "warmup_cosine",
+            "warmup_ratio": 0.05,
+            "min_lr": 1e-6,
+        },
         "grad_clip": {
             "enabled": False,
             "max_norm": 1.0,

@@ -1,4 +1,5 @@
 import json
+import math
 import os
 
 import numpy as np
@@ -57,6 +58,52 @@ def _log_scalar(writer, tag, value, step):
 
 def _append_history(history, key, step, value):
     history.setdefault(key, []).append((int(step), float(value)))
+
+
+def _resolve_lr_schedule(train_cfg, steps_per_epoch):
+    schedule_cfg = train_cfg.get("lr_schedule", {})
+    schedule_type = schedule_cfg.get("type", "warmup_cosine")
+    total_steps = int(schedule_cfg.get("total_steps", train_cfg["epochs"] * steps_per_epoch))
+    if "warmup_steps" in schedule_cfg:
+        warmup_steps = int(schedule_cfg["warmup_steps"])
+    else:
+        warmup_ratio = float(schedule_cfg.get("warmup_ratio", 0.0))
+        if warmup_ratio < 0 or warmup_ratio >= 1:
+            raise ValueError("training.lr_schedule.warmup_ratio must be in [0, 1)")
+        warmup_steps = int(total_steps * warmup_ratio)
+    min_lr = float(schedule_cfg.get("min_lr", 0.0))
+
+    if schedule_type not in ("constant", "warmup_cosine"):
+        raise ValueError(f"Unsupported training.lr_schedule.type={schedule_type}")
+    if total_steps <= 0:
+        raise ValueError("training.lr_schedule.total_steps must be positive")
+    if warmup_steps < 0:
+        raise ValueError("training.lr_schedule.warmup_steps must be non-negative")
+    if warmup_steps >= total_steps:
+        raise ValueError("training.lr_schedule.warmup_steps must be smaller than total_steps")
+    if min_lr < 0:
+        raise ValueError("training.lr_schedule.min_lr must be non-negative")
+    return schedule_type, total_steps, warmup_steps, min_lr
+
+
+def _compute_learning_rate(base_lr, step, schedule_type, total_steps, warmup_steps, min_lr):
+    if schedule_type == "constant":
+        return float(base_lr)
+
+    step = min(max(int(step), 1), int(total_steps))
+    base_lr = float(base_lr)
+    if warmup_steps > 0 and step <= warmup_steps:
+        return base_lr * step / warmup_steps
+
+    cosine_steps = max(total_steps - warmup_steps, 1)
+    progress = (step - warmup_steps) / cosine_steps
+    cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return min_lr + (base_lr - min_lr) * cosine_decay
+
+
+def _set_optimizer_lr(optimizer, lr):
+    for group in optimizer.param_groups:
+        group["lr"] = float(lr)
 
 
 def _save_training_curves(history, output_dir):
@@ -245,7 +292,19 @@ def main():
         encoder=encoder,
         ls_ridge=model_cfg.get("ls_ridge", 1e-6),
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_cfg["lr"])
+    base_lr = float(train_cfg["lr"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
+    (
+        lr_schedule_type,
+        lr_total_steps,
+        lr_warmup_steps,
+        lr_min,
+    ) = _resolve_lr_schedule(train_cfg, steps_per_epoch=len(train_loader))
+    print(
+        "LR schedule: "
+        f"type={lr_schedule_type}, base_lr={base_lr:g}, min_lr={lr_min:g}, "
+        f"warmup_steps={lr_warmup_steps}, total_steps={lr_total_steps}"
+    )
 
     eval_every = int(eval_cfg.get("eval_every", 5))
     target_recon = float(eval_cfg.get("target_recon_mse", 0.1))
@@ -356,6 +415,15 @@ def main():
                 else:
                     grad_norm = None
 
+                step_lr = _compute_learning_rate(
+                    base_lr=base_lr,
+                    step=total_steps + 1,
+                    schedule_type=lr_schedule_type,
+                    total_steps=lr_total_steps,
+                    warmup_steps=lr_warmup_steps,
+                    min_lr=lr_min,
+                )
+                _set_optimizer_lr(optimizer, step_lr)
                 optimizer.step()
                 total_steps += 1
                 train_batches += 1
@@ -383,6 +451,7 @@ def main():
                 )
                 if grad_norm is not None and torch.isfinite(grad_norm):
                     _log_scalar(writer, "train_step/grad_norm", grad_norm.item(), total_steps)
+                _log_scalar(writer, "train_step/lr", step_lr, total_steps)
 
             if train_batches == 0:
                 print(f"epoch={epoch:04d} no valid training batches")
@@ -391,6 +460,8 @@ def main():
             train_means = {
                 key: value / max(train_batches, 1) for key, value in train_sums.items()
             }
+            current_lr = float(optimizer.param_groups[0]["lr"])
+            train_means["lr"] = current_lr
             for key, value in train_means.items():
                 _append_history(history, f"train/{key}", epoch + 1, value)
                 _log_scalar(writer, f"train_epoch/{key}", value, epoch + 1)
@@ -403,7 +474,8 @@ def main():
                 f"posterior_std={train_means['posterior_std_hz_mean']:.4f} "
                 f"outside={train_means['freq_sample_outside_rate']:.4f} "
                 f"ls_cond={train_means['ls_cond_mean']:.3e} "
-                f"ls_amp_norm={train_means['ls_amp_norm_mean']:.3e}"
+                f"ls_amp_norm={train_means['ls_amp_norm_mean']:.3e} "
+                f"lr={current_lr:.3e}"
             )
 
             need_eval = (
