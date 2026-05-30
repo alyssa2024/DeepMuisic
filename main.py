@@ -121,7 +121,6 @@ def _save_training_curves(history, output_dir):
         ],
         "eval_metrics.png": [
             ("eval/loss", "loss"),
-            ("eval/freq_kl", "freq_kl"),
             ("eval/recon_mse_mean", "recon_mean"),
             ("eval/recon_mse_sampled", "recon_sampled"),
             ("eval/freq_rmse_hz_mean", "freq_rmse"),

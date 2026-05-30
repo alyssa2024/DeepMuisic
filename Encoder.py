@@ -169,11 +169,9 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         mu_unit = torch.tanh(raw_f_mu)
         mu_f = self.freq_mid + self.freq_half * mu_unit
 
-        log_rho2 = torch.clamp(
-            raw_logrho2_f,
-            min=self.min_log_rho2,
-            max=self.max_log_rho2,
-        )
+        log_rho2 = self.min_log_rho2 + (
+            self.max_log_rho2 - self.min_log_rho2
+        ) * torch.sigmoid(raw_logrho2_f)
         rho = torch.exp(0.5 * log_rho2)
         std_f = self.freq_half * rho
         logvar_f = 2.0 * torch.log(std_f + 1e-12)
