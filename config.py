@@ -82,7 +82,7 @@ CONFIG = {
         "lr": 1e-4,
         "lr_schedule": {
             "type": "warmup_cosine",
-            "warmup_ratio": 0.05,
+            "warmup_steps": 1000,
             "min_lr": 1e-6,
         },
         "grad_clip": {
