@@ -2,7 +2,7 @@ from typing import Dict
 
 import torch
 
-from loss import compute_sequence_posterior_recon_loss, kl_trunc_normal_uniform
+from loss import compute_sequence_posterior_recon_loss, kl_trunc_normal_trunc_normal
 
 
 def _complex_ri_mse(x_hat_complex: torch.Tensor, target_ri: torch.Tensor) -> torch.Tensor:
@@ -92,6 +92,7 @@ def evaluate_model(
     freq_sample_outside_sum = 0.0
     freq_prior_reg_sum = 0.0
     freq_kl_sum = 0.0
+    freq_kl_raw_sum = 0.0
     ls_cond_sum = 0.0
     ls_amp_norm_sum = 0.0
 
@@ -165,13 +166,20 @@ def evaluate_model(
             upper = model.encoder.freq_upper.to(device=mu_f.device, dtype=mu_f.dtype)
             freq_half = (upper - lower) / 2.0
             freq_center = (upper + lower) / 2.0
-            freq_kl_per_item = kl_trunc_normal_uniform(
-                mu_f=mu_f,
-                std_f=std_f,
-                freq_lower=model.encoder.freq_lower,
-                freq_upper=model.encoder.freq_upper,
+            prior_cfg = loss_cfg.get("prior", loss_cfg.get("loss_prior", {}))
+            prior_std_ratio = float(prior_cfg.get("std_ratio_to_half_band", 0.5))
+            prior_mu_f = model.encoder.freq_mid
+            prior_std_f = prior_std_ratio * model.encoder.freq_half
+            freq_kl_per_item = kl_trunc_normal_trunc_normal(
+                mu_q=mu_f,
+                std_q=std_f,
+                mu_p=prior_mu_f,
+                std_p=prior_std_f,
+                lower=model.encoder.freq_lower,
+                upper=model.encoder.freq_upper,
             )
-            freq_kl = freq_kl_per_item.sum(dim=-1).mean()
+            freq_kl_raw = freq_kl_per_item.sum(dim=-1).mean()
+            freq_kl = freq_kl_raw
             f_samples = sampled_diag["f_samples"]
             outside = (f_samples < lower.view(1, 1, -1)) | (
                 f_samples > upper.view(1, 1, -1)
@@ -257,6 +265,7 @@ def evaluate_model(
             freq_sample_outside_sum += freq_sample_outside_rate.item() * n
             freq_prior_reg_sum += freq_kl.item() * n
             freq_kl_sum += freq_kl.item() * n
+            freq_kl_raw_sum += freq_kl_raw.item() * n
             ls_cond_sum += cond_mean.sum().item()
             ls_amp_norm_sum += c_norm_mean.sum().item()
 
@@ -309,6 +318,7 @@ def evaluate_model(
             "freq_sample_outside_rate": freq_sample_outside_sum / total_sequences,
             "freq_prior_reg": freq_prior_reg_sum / total_sequences,
             "freq_kl": freq_kl_sum / total_sequences,
+            "freq_kl_raw": freq_kl_raw_sum / total_sequences,
             "amp_mape_mean": float(amp_mape_sum.sum() / total_freq_elements),
             "amp_success_rate_mean": amp_sequence_success_sum / total_sequences,
             "joint_amp_freq_success_rate_mean": (

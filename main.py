@@ -219,7 +219,8 @@ def main():
     freq_cfg = CONFIG["frequency"]
     model_cfg = CONFIG["model"]
     train_cfg = CONFIG["training"]
-    loss_cfg = CONFIG["loss"]
+    loss_cfg = dict(CONFIG["loss"])
+    loss_cfg["prior"] = dict(freq_cfg.get("loss_prior", {}))
     eval_cfg = CONFIG.get("eval", {})
     seed = CONFIG.get("seed", 42)
     run_dir = CONFIG.get("run_dir", ".")
@@ -371,6 +372,8 @@ def main():
                 "loss": 0.0,
                 "recon": 0.0,
                 "freq_kl": 0.0,
+                "freq_kl_raw": 0.0,
+                "freq_kl_beta_anneal": 0.0,
                 "freq_prior_reg": 0.0,
                 "posterior_std_hz_mean": 0.0,
                 "freq_sample_outside_rate": 0.0,
@@ -396,6 +399,7 @@ def main():
                     model=model,
                     t=t_local,
                     loss_cfg=loss_cfg,
+                    global_step=total_steps + 1,
                 )
 
                 if not torch.isfinite(loss):
@@ -431,8 +435,12 @@ def main():
 
                 train_sums["loss"] += loss.item()
                 train_sums["recon"] += recon.item()
-                train_sums["freq_kl"] += freq_kl.item()
-                train_sums["freq_prior_reg"] += freq_kl.item()
+                train_sums["freq_kl"] += float(loss_diag["freq_kl"].item())
+                train_sums["freq_kl_raw"] += float(loss_diag["freq_kl_raw"].item())
+                train_sums["freq_kl_beta_anneal"] += float(
+                    loss_diag["freq_kl_beta_anneal"].item()
+                )
+                train_sums["freq_prior_reg"] += float(loss_diag["freq_prior_reg"].item())
                 for key in (
                     "posterior_std_hz_mean",
                     "freq_sample_outside_rate",
@@ -445,8 +453,25 @@ def main():
 
                 _log_scalar(writer, "train_step/loss", loss.item(), total_steps)
                 _log_scalar(writer, "train_step/recon", recon.item(), total_steps)
-                _log_scalar(writer, "train_step/freq_kl", freq_kl.item(), total_steps)
-                _log_scalar(writer, "train_step/freq_prior_reg", freq_kl.item(), total_steps)
+                _log_scalar(writer, "train_step/freq_kl", loss_diag["freq_kl"].item(), total_steps)
+                _log_scalar(
+                    writer,
+                    "train_step/freq_kl_raw",
+                    loss_diag["freq_kl_raw"].item(),
+                    total_steps,
+                )
+                _log_scalar(
+                    writer,
+                    "train_step/freq_kl_beta_anneal",
+                    loss_diag["freq_kl_beta_anneal"].item(),
+                    total_steps,
+                )
+                _log_scalar(
+                    writer,
+                    "train_step/freq_prior_reg",
+                    loss_diag["freq_prior_reg"].item(),
+                    total_steps,
+                )
                 if grad_norm is not None and torch.isfinite(grad_norm):
                     _log_scalar(writer, "train_step/grad_norm", grad_norm.item(), total_steps)
                 _log_scalar(writer, "train_step/lr", step_lr, total_steps)
@@ -469,7 +494,8 @@ def main():
                 f"train_loss={train_means['loss']:.6f} "
                 f"train_recon={train_means['recon']:.6f} "
                 f"freq_kl={train_means['freq_kl']:.6f} "
-                f"freq_prior_reg={train_means['freq_prior_reg']:.6f} "
+                f"freq_kl_raw={train_means['freq_kl_raw']:.6f} "
+                f"kl_anneal={train_means['freq_kl_beta_anneal']:.4f} "
                 f"posterior_std={train_means['posterior_std_hz_mean']:.4f} "
                 f"outside={train_means['freq_sample_outside_rate']:.4f} "
                 f"ls_cond={train_means['ls_cond_mean']:.3e} "
@@ -546,6 +572,7 @@ def main():
                     f"epoch={epoch:04d} "
                     f"loss={val_metrics['loss']:.6f} "
                     f"freq_kl={val_metrics['freq_kl']:.6f} "
+                    f"freq_kl_raw={val_metrics.get('freq_kl_raw', val_metrics['freq_kl']):.6f} "
                     f"recon_mse_mean={val_metrics['recon_mse_mean']:.6f} "
                     f"recon_mse_sampled={val_metrics['recon_mse_sampled']:.6f} "
                     f"freq_rmse_hz_mean={val_metrics['freq_rmse_hz_mean']:.4f} "

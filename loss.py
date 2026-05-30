@@ -141,6 +141,77 @@ def kl_trunc_normal_uniform(mu_f, std_f, freq_lower, freq_upper, eps=1e-8):
     return torch.clamp(kl, min=0.0)
 
 
+def kl_trunc_normal_trunc_normal(
+    mu_q,
+    std_q,
+    mu_p,
+    std_p,
+    lower,
+    upper,
+    eps=1e-8,
+):
+    """
+    KL( TN_[lower, upper](mu_q, std_q^2)
+        ||
+        TN_[lower, upper](mu_p, std_p^2) ).
+    """
+    if mu_q.ndim != 2 or std_q.ndim != 2:
+        raise ValueError(f"mu_q/std_q must be [B, K], got {mu_q.shape}/{std_q.shape}")
+    if mu_q.shape != std_q.shape:
+        raise ValueError(f"mu_q and std_q shape mismatch: {mu_q.shape} vs {std_q.shape}")
+
+    std_q = std_q.clamp_min(eps)
+    lower, upper = _as_frequency_bounds(lower, upper, mu_q)
+
+    mu_p = mu_p.to(device=mu_q.device, dtype=mu_q.dtype)
+    std_p = std_p.to(device=mu_q.device, dtype=mu_q.dtype).clamp_min(eps)
+    if mu_p.ndim == 1:
+        mu_p = mu_p.view(1, -1)
+    if std_p.ndim == 1:
+        std_p = std_p.view(1, -1)
+
+    alpha_q = (lower - mu_q) / std_q
+    beta_q = (upper - mu_q) / std_q
+    alpha_p = (lower - mu_p) / std_p
+    beta_p = (upper - mu_p) / std_p
+
+    z_q = (standard_normal_cdf(beta_q) - standard_normal_cdf(alpha_q)).clamp_min(eps)
+    z_p = (standard_normal_cdf(beta_p) - standard_normal_cdf(alpha_p)).clamp_min(eps)
+
+    pdf_alpha_q = standard_normal_pdf(alpha_q)
+    pdf_beta_q = standard_normal_pdf(beta_q)
+    m_q = (pdf_alpha_q - pdf_beta_q) / z_q
+    s_q = 1.0 + (alpha_q * pdf_alpha_q - beta_q * pdf_beta_q) / z_q
+
+    delta = mu_q - mu_p
+    prior_quad = (
+        delta.pow(2)
+        + 2.0 * delta * std_q * m_q
+        + std_q.pow(2) * s_q
+    ) / std_p.pow(2)
+
+    kl = (
+        torch.log(std_p)
+        + torch.log(z_p)
+        - torch.log(std_q)
+        - torch.log(z_q)
+        + 0.5 * (prior_quad - s_q)
+    )
+    return torch.clamp(kl, min=0.0)
+
+
+def compute_beta_anneal(loss_cfg, step=None):
+    kl_cfg = loss_cfg.get("kl", {})
+    if not bool(kl_cfg.get("enabled", True)):
+        return 0.0
+
+    warmup_steps = int(kl_cfg.get("warmup_steps", 0))
+    if step is None or warmup_steps <= 0:
+        return 1.0
+
+    return min(1.0, float(step) / float(warmup_steps))
+
+
 def sample_sequence_frequencies(mu_f, std_f, num_samples, freq_lower, freq_upper):
     """
     Sample sequence-level frequency vectors from truncated Gaussian posterior.
@@ -267,6 +338,7 @@ def compute_harmonic_loss(
     model,
     t,
     loss_cfg,
+    global_step=None,
 ):
     """
     Args:
@@ -291,13 +363,34 @@ def compute_harmonic_loss(
         ridge_lambda=model.ls_ridge,
     )
 
-    freq_kl_per_item = kl_trunc_normal_uniform(
-        mu_f=mu_f,
-        std_f=std_f,
-        freq_lower=model.encoder.freq_lower,
-        freq_upper=model.encoder.freq_upper,
-    )
-    freq_kl = freq_kl_per_item.sum(dim=-1).mean()
+    kl_cfg = loss_cfg.get("kl", {})
+    kl_type = kl_cfg.get("type", "trunc_normal_to_trunc_normal")
+    if kl_type == "trunc_normal_to_uniform":
+        freq_kl_per_item = kl_trunc_normal_uniform(
+            mu_f=mu_f,
+            std_f=std_f,
+            freq_lower=model.encoder.freq_lower,
+            freq_upper=model.encoder.freq_upper,
+        )
+    elif kl_type == "trunc_normal_to_trunc_normal":
+        prior_cfg = loss_cfg.get("prior", loss_cfg.get("loss_prior", {}))
+        prior_mean = prior_cfg.get("mean", "center")
+        if prior_mean != "center":
+            raise ValueError(f"Unsupported loss prior mean={prior_mean!r}")
+        prior_std_ratio = float(prior_cfg.get("std_ratio_to_half_band", 0.5))
+        prior_mu_f = model.encoder.freq_mid
+        prior_std_f = prior_std_ratio * model.encoder.freq_half
+        freq_kl_per_item = kl_trunc_normal_trunc_normal(
+            mu_q=mu_f,
+            std_q=std_f,
+            mu_p=prior_mu_f,
+            std_p=prior_std_f,
+            lower=model.encoder.freq_lower,
+            upper=model.encoder.freq_upper,
+        )
+    else:
+        raise ValueError(f"Unsupported loss.kl.type={kl_type!r}")
+    freq_kl_raw = freq_kl_per_item.sum(dim=-1).mean()
 
     _, outside_rate = uniform_support_penalty(
         f_samples=recon_diag["f_samples"],
@@ -306,17 +399,33 @@ def compute_harmonic_loss(
     )
 
     beta_freq = float(loss_cfg.get("beta_freq", 1e-5))
-    loss = recon_loss + beta_freq * freq_kl
+    beta_anneal = compute_beta_anneal(loss_cfg=loss_cfg, step=global_step)
+    freq_kl_weighted = beta_anneal * freq_kl_raw
+    loss = recon_loss + beta_freq * freq_kl_weighted
 
     diagnostics = {
         "loss": loss.detach(),
         "recon_loss": recon_loss.detach(),
-        "freq_kl": freq_kl.detach(),
+        "freq_kl": freq_kl_weighted.detach(),
+        "freq_kl_raw": freq_kl_raw.detach(),
+        "freq_kl_beta_anneal": torch.as_tensor(
+            beta_anneal,
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
         "freq_kl_per_harmonic_mean": freq_kl_per_item.mean(dim=0).detach(),
-        "freq_prior_reg": freq_kl.detach(),
+        "freq_prior_reg": freq_kl_weighted.detach(),
         "posterior_std_hz_mean": std_f.mean().detach(),
         "freq_sample_outside_rate": outside_rate.detach(),
-        **{
+    }
+
+    if "log_rho2_f" in model_outputs:
+        diagnostics["log_rho2_f_mean"] = model_outputs["log_rho2_f"].mean().detach()
+        diagnostics["log_rho2_f_min"] = model_outputs["log_rho2_f"].min().detach()
+        diagnostics["log_rho2_f_max"] = model_outputs["log_rho2_f"].max().detach()
+
+    diagnostics.update(
+        {
             k: v.detach() if torch.is_tensor(v) else v
             for k, v in recon_diag.items()
             if k
@@ -326,7 +435,7 @@ def compute_harmonic_loss(
                 "c_hat_samples",
                 "freq_sample_std_mean",
             )
-        },
-    }
+        }
+    )
 
-    return loss, recon_loss, freq_kl, diagnostics
+    return loss, recon_loss, freq_kl_weighted, diagnostics

@@ -41,11 +41,14 @@ CONFIG = {
         },
         "posterior": {
             "type": "truncated_normal",
+            "scale_parameterization": "sigmoid_bound",
             "min_log_rho2": -12.0,
             "max_log_rho2": -7.0,
         },
         "loss_prior": {
-            "type": "uniform",
+            "type": "truncated_normal",
+            "mean": "center",
+            "std_ratio_to_half_band": 0.5,
         },
     },
     "model": {
@@ -67,7 +70,7 @@ CONFIG = {
         },
         "kl": {
             "enabled": True,
-            "type": "trunc_normal_to_uniform",
+            "type": "trunc_normal_to_trunc_normal",
             "warmup_steps": 10000,
             "reuse_reconstruction_samples": False,
         },

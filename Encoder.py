@@ -176,4 +176,4 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         std_f = self.freq_half * rho
         logvar_f = 2.0 * torch.log(std_f + 1e-12)
 
-        return mu_f, logvar_f, std_f
+        return mu_f, logvar_f, std_f, log_rho2

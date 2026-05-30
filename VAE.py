@@ -79,14 +79,22 @@ class PhysicalHarmonicVAE(nn.Module):
 
     def forward(self, x, t=None, probe_ids=None):
         encoder_out = self.encoder(x, probe_ids=probe_ids)
-        if len(encoder_out) == 3:
+        if len(encoder_out) == 4:
+            mu_f, logvar_f, std_f, log_rho2_f = encoder_out
+        elif len(encoder_out) == 3:
             mu_f, logvar_f, std_f = encoder_out
+            log_rho2_f = None
         else:
             mu_f, logvar_f = encoder_out
             std_f = torch.exp(0.5 * logvar_f)
+            log_rho2_f = None
 
-        return {
+        outputs = {
             "mu_f": mu_f,
             "std_f": std_f,
             "logvar_f": logvar_f,
         }
+        if log_rho2_f is not None:
+            outputs["log_rho2_f"] = log_rho2_f
+
+        return outputs
