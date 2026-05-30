@@ -117,10 +117,11 @@ def _save_training_curves(history, output_dir):
         "train_loss.png": [
             ("train/loss", "loss"),
             ("train/recon", "recon"),
-            ("train/freq_prior_reg", "freq_prior_reg"),
+            ("train/freq_kl", "freq_kl"),
         ],
         "eval_metrics.png": [
             ("eval/loss", "loss"),
+            ("eval/freq_kl", "freq_kl"),
             ("eval/recon_mse_mean", "recon_mean"),
             ("eval/recon_mse_sampled", "recon_sampled"),
             ("eval/freq_rmse_hz_mean", "freq_rmse"),
@@ -370,6 +371,7 @@ def main():
             train_sums = {
                 "loss": 0.0,
                 "recon": 0.0,
+                "freq_kl": 0.0,
                 "freq_prior_reg": 0.0,
                 "posterior_std_hz_mean": 0.0,
                 "freq_sample_outside_rate": 0.0,
@@ -389,7 +391,7 @@ def main():
 
                 optimizer.zero_grad()
                 model_outputs = model(x_batch, t_local, probe_ids=probe_ids)
-                loss, recon, freq_prior_reg, loss_diag = compute_harmonic_loss(
+                loss, recon, freq_kl, loss_diag = compute_harmonic_loss(
                     x_target=target_batch,
                     model_outputs=model_outputs,
                     model=model,
@@ -430,7 +432,8 @@ def main():
 
                 train_sums["loss"] += loss.item()
                 train_sums["recon"] += recon.item()
-                train_sums["freq_prior_reg"] += freq_prior_reg.item()
+                train_sums["freq_kl"] += freq_kl.item()
+                train_sums["freq_prior_reg"] += freq_kl.item()
                 for key in (
                     "posterior_std_hz_mean",
                     "freq_sample_outside_rate",
@@ -443,12 +446,8 @@ def main():
 
                 _log_scalar(writer, "train_step/loss", loss.item(), total_steps)
                 _log_scalar(writer, "train_step/recon", recon.item(), total_steps)
-                _log_scalar(
-                    writer,
-                    "train_step/freq_prior_reg",
-                    freq_prior_reg.item(),
-                    total_steps,
-                )
+                _log_scalar(writer, "train_step/freq_kl", freq_kl.item(), total_steps)
+                _log_scalar(writer, "train_step/freq_prior_reg", freq_kl.item(), total_steps)
                 if grad_norm is not None and torch.isfinite(grad_norm):
                     _log_scalar(writer, "train_step/grad_norm", grad_norm.item(), total_steps)
                 _log_scalar(writer, "train_step/lr", step_lr, total_steps)
@@ -470,6 +469,7 @@ def main():
                 f"epoch={epoch:04d} "
                 f"train_loss={train_means['loss']:.6f} "
                 f"train_recon={train_means['recon']:.6f} "
+                f"freq_kl={train_means['freq_kl']:.6f} "
                 f"freq_prior_reg={train_means['freq_prior_reg']:.6f} "
                 f"posterior_std={train_means['posterior_std_hz_mean']:.4f} "
                 f"outside={train_means['freq_sample_outside_rate']:.4f} "
@@ -546,6 +546,7 @@ def main():
                     "[EVAL] "
                     f"epoch={epoch:04d} "
                     f"loss={val_metrics['loss']:.6f} "
+                    f"freq_kl={val_metrics['freq_kl']:.6f} "
                     f"recon_mse_mean={val_metrics['recon_mse_mean']:.6f} "
                     f"recon_mse_sampled={val_metrics['recon_mse_sampled']:.6f} "
                     f"freq_rmse_hz_mean={val_metrics['freq_rmse_hz_mean']:.4f} "

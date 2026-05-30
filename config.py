@@ -40,13 +40,12 @@ CONFIG = {
             "type": "relative_band",
         },
         "posterior": {
-            "type": "range_scaled_gaussian",
+            "type": "truncated_normal",
             "min_log_rho2": -12.0,
             "max_log_rho2": -7.0,
         },
         "loss_prior": {
-            "type": "uniform_support_regularizer",
-            "outside_penalty": 1.0,
+            "type": "uniform",
         },
     },
     "model": {
@@ -67,9 +66,10 @@ CONFIG = {
             "eval_at_mean": True,
         },
         "kl": {
-            "enabled": False,
-            "warmup_steps": 0,
-            "reuse_reconstruction_samples": True,
+            "enabled": True,
+            "type": "trunc_normal_to_uniform",
+            "warmup_steps": 10000,
+            "reuse_reconstruction_samples": False,
         },
         "success": {
             "freq_relative_tol": 0.02,
