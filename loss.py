@@ -244,6 +244,9 @@ def compute_sequence_posterior_recon_loss(
     sequence_posterior_samples,
     ridge_lambda,
     f_samples=None,
+    noise_var_norm=None,
+    include_log_const=False,
+    eps=1e-8,
 ):
     """
     Reconstruct each sequence from sequence-level posterior frequency samples.
@@ -297,13 +300,41 @@ def compute_sequence_posterior_recon_loss(
     assert c_hat_samples.shape[:2] == f_samples.shape[:2]
 
     sqerr = torch.abs(y_hat_samples - y_complex.unsqueeze(0)) ** 2
-    recon_loss = sqerr.mean()
+    recon_mse = sqerr.mean()
+
+    if noise_var_norm is None:
+        noise_var = torch.ones(
+            y_complex.shape[0],
+            device=y_complex.device,
+            dtype=sqerr.dtype,
+        )
+    else:
+        noise_var = noise_var_norm.to(device=y_complex.device, dtype=sqerr.dtype)
+        if noise_var.ndim != 1 or noise_var.shape[0] != y_complex.shape[0]:
+            raise ValueError(
+                f"noise_var_norm must have shape [B], got {noise_var_norm.shape}"
+            )
+    noise_var = noise_var.clamp_min(eps)
+
+    recon_nll_core_per_sequence = (
+        sqerr / noise_var.view(1, -1, 1)
+    ).sum(dim=-1)
+    recon_nll_core = recon_nll_core_per_sequence.mean()
+    log_const = y_complex.shape[1] * torch.log(math.pi * noise_var).mean()
+    recon_nll_full = recon_nll_core + log_const
+    recon_loss = recon_nll_full if include_log_const else recon_nll_core
 
     amp_norm = torch.linalg.norm(c_hat_samples, dim=-1)
     diagnostics = {
         "f_samples": f_samples,
         "y_hat_samples": y_hat_samples,
         "c_hat_samples": c_hat_samples,
+        "recon_mse_sampled": recon_mse,
+        "recon_nll": recon_nll_core,
+        "recon_nll_full": recon_nll_full,
+        "noise_var_norm_mean": noise_var.mean(),
+        "noise_var_norm_min": noise_var.min(),
+        "noise_var_norm_max": noise_var.max(),
         "freq_sample_std_mean": f_samples.std(dim=0, unbiased=False).mean(),
         "ls_cond_mean": ls_cond_samples.mean(),
         "ls_cond_p95": torch.quantile(ls_cond_samples.reshape(-1), 0.95),
@@ -338,6 +369,7 @@ def compute_harmonic_loss(
     model,
     t,
     loss_cfg,
+    noise_var_norm=None,
     global_step=None,
 ):
     """
@@ -353,6 +385,7 @@ def compute_harmonic_loss(
 
     rec_cfg = loss_cfg.get("reconstruction", {})
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
+    include_log_const = bool(rec_cfg.get("include_log_const", False))
     recon_loss, recon_diag = compute_sequence_posterior_recon_loss(
         y_complex=y_complex,
         t=t,
@@ -361,6 +394,8 @@ def compute_harmonic_loss(
         model=model,
         sequence_posterior_samples=s_seq,
         ridge_lambda=model.ls_ridge,
+        noise_var_norm=noise_var_norm,
+        include_log_const=include_log_const,
     )
 
     kl_cfg = loss_cfg.get("kl", {})
@@ -398,7 +433,7 @@ def compute_harmonic_loss(
         freq_upper=model.encoder.freq_upper,
     )
 
-    beta_freq = float(loss_cfg.get("beta_freq", 1e-5))
+    beta_freq = float(loss_cfg.get("beta_freq", 1.0))
     beta_anneal = compute_beta_anneal(loss_cfg=loss_cfg, step=global_step)
     freq_kl_weighted = beta_anneal * freq_kl_raw
     loss = recon_loss + beta_freq * freq_kl_weighted

@@ -117,7 +117,6 @@ def _save_training_curves(history, output_dir):
         "train_loss.png": [
             ("train/loss", "loss"),
             ("train/recon", "recon"),
-            ("train/freq_kl", "freq_kl"),
         ],
         "eval_metrics.png": [
             ("eval/loss", "loss"),
@@ -371,12 +370,15 @@ def main():
             train_sums = {
                 "loss": 0.0,
                 "recon": 0.0,
+                "recon_mse_sampled": 0.0,
+                "recon_nll_full": 0.0,
                 "freq_kl": 0.0,
                 "freq_kl_raw": 0.0,
                 "freq_kl_beta_anneal": 0.0,
                 "freq_prior_reg": 0.0,
                 "posterior_std_hz_mean": 0.0,
                 "freq_sample_outside_rate": 0.0,
+                "noise_var_norm_mean": 0.0,
                 "ls_cond_mean": 0.0,
                 "ls_cond_p95": 0.0,
                 "ls_amp_norm_mean": 0.0,
@@ -389,6 +391,7 @@ def main():
                 t_batch = batch["t"].to(device)
                 probe_ids = batch["probe_ids"].to(device)
                 target_batch = batch["target"].to(device)
+                noise_var_norm = batch["noise_var_norm"].to(device)
                 t_local = t_batch - t_batch[:, :1]
 
                 optimizer.zero_grad()
@@ -399,6 +402,7 @@ def main():
                     model=model,
                     t=t_local,
                     loss_cfg=loss_cfg,
+                    noise_var_norm=noise_var_norm,
                     global_step=total_steps + 1,
                 )
 
@@ -435,6 +439,8 @@ def main():
 
                 train_sums["loss"] += loss.item()
                 train_sums["recon"] += recon.item()
+                train_sums["recon_mse_sampled"] += float(loss_diag["recon_mse_sampled"].item())
+                train_sums["recon_nll_full"] += float(loss_diag["recon_nll_full"].item())
                 train_sums["freq_kl"] += float(loss_diag["freq_kl"].item())
                 train_sums["freq_kl_raw"] += float(loss_diag["freq_kl_raw"].item())
                 train_sums["freq_kl_beta_anneal"] += float(
@@ -444,6 +450,7 @@ def main():
                 for key in (
                     "posterior_std_hz_mean",
                     "freq_sample_outside_rate",
+                    "noise_var_norm_mean",
                     "ls_cond_mean",
                     "ls_cond_p95",
                     "ls_amp_norm_mean",
@@ -453,6 +460,18 @@ def main():
 
                 _log_scalar(writer, "train_step/loss", loss.item(), total_steps)
                 _log_scalar(writer, "train_step/recon", recon.item(), total_steps)
+                _log_scalar(
+                    writer,
+                    "train_step/recon_mse_sampled",
+                    loss_diag["recon_mse_sampled"].item(),
+                    total_steps,
+                )
+                _log_scalar(
+                    writer,
+                    "train_step/recon_nll_full",
+                    loss_diag["recon_nll_full"].item(),
+                    total_steps,
+                )
                 _log_scalar(writer, "train_step/freq_kl", loss_diag["freq_kl"].item(), total_steps)
                 _log_scalar(
                     writer,
@@ -492,7 +511,8 @@ def main():
             print(
                 f"epoch={epoch:04d} "
                 f"train_loss={train_means['loss']:.6f} "
-                f"train_recon={train_means['recon']:.6f} "
+                f"train_recon_nll={train_means['recon']:.6f} "
+                f"train_recon_mse={train_means['recon_mse_sampled']:.6f} "
                 f"freq_kl={train_means['freq_kl']:.6f} "
                 f"freq_kl_raw={train_means['freq_kl_raw']:.6f} "
                 f"kl_anneal={train_means['freq_kl_beta_anneal']:.4f} "
@@ -573,6 +593,7 @@ def main():
                     f"loss={val_metrics['loss']:.6f} "
                     f"freq_kl={val_metrics['freq_kl']:.6f} "
                     f"freq_kl_raw={val_metrics.get('freq_kl_raw', val_metrics['freq_kl']):.6f} "
+                    f"recon_nll={val_metrics['recon_nll_sampled']:.6f} "
                     f"recon_mse_mean={val_metrics['recon_mse_mean']:.6f} "
                     f"recon_mse_sampled={val_metrics['recon_mse_sampled']:.6f} "
                     f"freq_rmse_hz_mean={val_metrics['freq_rmse_hz_mean']:.4f} "

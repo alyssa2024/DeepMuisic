@@ -50,6 +50,8 @@ def evaluate_model(
         "loss": 0.0,
         "recon_mse_mean": 0.0,
         "recon_mse_sampled": 0.0,
+        "recon_nll_sampled": 0.0,
+        "recon_nll_full": 0.0,
     }
 
     success_cfg = loss_cfg.get("success", {})
@@ -106,6 +108,7 @@ def evaluate_model(
             t_batch = batch["t"].to(device)
             probe_ids = batch["probe_ids"].to(device)
             target_batch = batch["target"].to(device)
+            noise_var_norm = batch["noise_var_norm"].to(device)
             true_freq = batch["true_freq_hz"].to(device)
             true_amp = torch.complex(
                 batch["true_amp_real"].to(device),
@@ -152,7 +155,7 @@ def evaluate_model(
             )
             recon_mse_mean = _complex_ri_mse(x_hat_mean, target_batch)
 
-            recon_mse_sampled, sampled_diag = compute_sequence_posterior_recon_loss(
+            recon_nll_sampled, sampled_diag = compute_sequence_posterior_recon_loss(
                 y_complex=y_complex,
                 t=t_local,
                 mu_f=mu_f,
@@ -160,7 +163,11 @@ def evaluate_model(
                 model=model,
                 sequence_posterior_samples=s_seq,
                 ridge_lambda=model.ls_ridge,
+                noise_var_norm=noise_var_norm,
+                include_log_const=False,
             )
+            recon_mse_sampled = sampled_diag["recon_mse_sampled"]
+            recon_nll_full = sampled_diag["recon_nll_full"]
 
             lower = model.encoder.freq_lower.to(device=mu_f.device, dtype=mu_f.dtype)
             upper = model.encoder.freq_upper.to(device=mu_f.device, dtype=mu_f.dtype)
@@ -229,14 +236,16 @@ def evaluate_model(
                 harmonic_order_success_sum += order_ok.float().sum().item()
                 total_order_pairs += order_ok.numel()
 
-            beta_freq = float(loss_cfg.get("beta_freq", 1e-5))
-            loss = recon_mse_sampled + beta_freq * freq_kl
+            beta_freq = float(loss_cfg.get("beta_freq", 1.0))
+            loss = recon_nll_sampled + beta_freq * freq_kl
 
             total_sequences += n
             total_freq_elements += n * k_count
             stats["loss"] += loss.item() * n
             stats["recon_mse_mean"] += recon_mse_mean.item() * n
             stats["recon_mse_sampled"] += recon_mse_sampled.item() * n
+            stats["recon_nll_sampled"] += recon_nll_sampled.item() * n
+            stats["recon_nll_full"] += recon_nll_full.item() * n
 
             freq_sqerr_sum += freq_err.pow(2).sum(dim=0).double().cpu()
             freq_abs_err_sum += freq_abs_err.sum(dim=0).double().cpu()

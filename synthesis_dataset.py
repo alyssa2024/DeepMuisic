@@ -87,6 +87,7 @@ def generate_complex_harmonic_displacement(
         x_t += complex_amp_k * np.exp(1j * (2 * np.pi * f_k * t))
 
     # Add complex Gaussian white noise if requested
+    noise_power = 0.0
     if snr_db is not None:
         rng = np.random.default_rng() if rng is None else rng
         # Signal power
@@ -103,7 +104,7 @@ def generate_complex_harmonic_displacement(
     else:
         x_t_noisy = x_t
 
-    return x_t_noisy, x_t
+    return x_t_noisy, x_t, noise_power
 
 
 def compute_frequency_support(freq_center_hz, relative_half_band):
@@ -193,7 +194,7 @@ def generate_one_btt_sequence(
         )
     )
 
-    x_observed, x_clean = generate_complex_harmonic_displacement(
+    x_observed, x_clean, noise_power = generate_complex_harmonic_displacement(
         t=t_samples,
         freqs=freq_hz,
         amp_real=amp_real,
@@ -205,6 +206,7 @@ def generate_one_btt_sequence(
     return {
         "x_observed": x_observed,
         "x_clean": x_clean,
+        "noise_power": noise_power,
         "t_samples": t_samples,
         "rev_ids": rev_ids,
         "probe_ids": probe_ids,
@@ -242,7 +244,7 @@ if __name__ == "__main__":
     SNR = 20  # Signal-to-noise ratio (dB)
 
     # Generate complex displacement signal x_t
-    x_t_observed, x_t_true = generate_complex_harmonic_displacement(
+    x_t_observed, x_t_true, _ = generate_complex_harmonic_displacement(
         t=t_samples,
         freqs=f_k,
         amp_real=amp_real_k,

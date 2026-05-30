@@ -144,6 +144,7 @@ class BTTSequenceDataset(Dataset):
             x_observed_norm = x_observed
         else:
             raise ValueError(f"Unsupported normalization={self.normalization}")
+        noise_var_norm = float(sample["noise_power"]) / ((amp_scale + 1e-12) ** 2)
 
         features, t_samples, rev_ids, probe_ids = build_btt_point_features(
             x_observed=x_observed_norm,
@@ -168,4 +169,5 @@ class BTTSequenceDataset(Dataset):
             "true_amp_real": torch.as_tensor(amp_real, dtype=torch.float32),
             "true_amp_imag": torch.as_tensor(amp_imag, dtype=torch.float32),
             "amp_scale": torch.as_tensor(amp_scale, dtype=torch.float32),
+            "noise_var_norm": torch.as_tensor(noise_var_norm, dtype=torch.float32),
         }

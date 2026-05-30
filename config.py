@@ -61,8 +61,10 @@ CONFIG = {
         "ls_ridge": 1e-5,
     },
     "loss": {
-        "beta_freq": 1e-5,
+        "beta_freq": 1.0,
         "reconstruction": {
+            "type": "complex_gaussian_nll",
+            "include_log_const": False,
             "use_posterior_sampling": True,
             "sequence_posterior_samples": 2,
             "sample_at_train": True,
