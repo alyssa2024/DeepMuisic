@@ -58,6 +58,9 @@ def evaluate_model(
         "recon_nll_sampled": 0.0,
         "recon_nll_full": 0.0,
         "amp_prior_quad": 0.0,
+        "marginal_nll": 0.0,
+        "marginal_quad": 0.0,
+        "marginal_logdet": 0.0,
     }
 
     success_cfg = loss_cfg.get("success", {})
@@ -105,6 +108,10 @@ def evaluate_model(
     ls_amp_norm_sum = 0.0
     amp_lambda_mean_sum = 0.0
     amp_prior_var_norm_mean_sum = 0.0
+    amp_post_std_norm_sum = 0.0
+    amp_post_std_m_sum = 0.0
+    amp_post_var_trace_sum = 0.0
+    amp_uncertainty_to_prior_ratio_sum = 0.0
 
     posterior_std_values = []
     ls_cond_values = []
@@ -114,6 +121,7 @@ def evaluate_model(
     if signal_cfg is None:
         amp_prior_cfg["enabled"] = False
     use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
+    amp_mode = amp_prior_cfg.get("mode", "map")
 
     with torch.no_grad():
         for batch in dataloader:
@@ -153,6 +161,7 @@ def evaluate_model(
                 complex_success_sum = torch.zeros(k_count, dtype=torch.float64)
                 phase_circ_err_sum = torch.zeros(k_count, dtype=torch.float64)
 
+            amp_post_var_diag = None
             if use_amp_prior:
                 amp_prior_mean, amp_prior_var = build_normalized_amp_prior(
                     f=mu_f,
@@ -161,17 +170,32 @@ def evaluate_model(
                     signal_cfg=signal_cfg,
                     amp_prior_cfg=amp_prior_cfg,
                 )
-                amp_real_mean, amp_imag_mean, c_mean, cond_mean = (
-                    model.solve_amplitudes_map(
+                if amp_mode == "marginal_likelihood":
+                    c_mean, amp_post_var_diag, bayes_diag = model.solve_amplitudes_bayes(
                         y_complex=y_complex,
                         f=mu_f,
                         t=t_local,
                         amp_prior_mean=amp_prior_mean,
                         amp_prior_var=amp_prior_var,
                         noise_var_norm=noise_var_norm,
+                        return_cov_diag=True,
                         return_condition=True,
                     )
-                )
+                    amp_real_mean = c_mean.real
+                    amp_imag_mean = c_mean.imag
+                    cond_mean = bayes_diag["bayes_cond"]
+                else:
+                    amp_real_mean, amp_imag_mean, c_mean, cond_mean = (
+                        model.solve_amplitudes_map(
+                            y_complex=y_complex,
+                            f=mu_f,
+                            t=t_local,
+                            amp_prior_mean=amp_prior_mean,
+                            amp_prior_var=amp_prior_var,
+                            noise_var_norm=noise_var_norm,
+                            return_condition=True,
+                        )
+                    )
             else:
                 amp_real_mean, amp_imag_mean, c_mean, cond_mean = (
                     model.solve_amplitudes_ls(
@@ -287,6 +311,9 @@ def evaluate_model(
             stats["recon_nll_sampled"] += recon_nll_sampled.item() * n
             stats["recon_nll_full"] += recon_nll_full.item() * n
             stats["amp_prior_quad"] += sampled_diag["amp_prior_quad"].item() * n
+            stats["marginal_nll"] += sampled_diag["marginal_nll"].item() * n
+            stats["marginal_quad"] += sampled_diag["marginal_quad"].item() * n
+            stats["marginal_logdet"] += sampled_diag["marginal_logdet"].item() * n
 
             freq_sqerr_sum += freq_err.pow(2).sum(dim=0).double().cpu()
             freq_abs_err_sum += freq_abs_err.sum(dim=0).double().cpu()
@@ -322,6 +349,16 @@ def evaluate_model(
             amp_prior_var_norm_mean_sum += (
                 sampled_diag["amp_prior_var_norm_mean"].item() * n
             )
+            amp_post_var_trace_sum += sampled_diag["amp_post_var_trace"].item() * n
+            amp_post_std_norm_sum += sampled_diag["amp_post_std_mean"].item() * n
+            amp_uncertainty_to_prior_ratio_sum += (
+                sampled_diag["amp_uncertainty_to_prior_ratio_mean"].item() * n
+            )
+            if amp_post_var_diag is not None:
+                amp_post_std_m_sum += (
+                    torch.sqrt(amp_post_var_diag.clamp_min(1e-12))
+                    * amp_scale[:, None]
+                ).mean().item() * n
 
             posterior_std_values.append(std_f.detach().reshape(-1).cpu())
             ls_cond_values.append(cond_mean.detach().reshape(-1).cpu())
@@ -397,6 +434,12 @@ def evaluate_model(
             "amp_lambda_mean": amp_lambda_mean_sum / total_sequences,
             "amp_prior_var_norm_mean": (
                 amp_prior_var_norm_mean_sum / total_sequences
+            ),
+            "amp_post_std_norm_mean": amp_post_std_norm_sum / total_sequences,
+            "amp_post_std_m_mean": amp_post_std_m_sum / total_sequences,
+            "amp_post_var_trace_mean": amp_post_var_trace_sum / total_sequences,
+            "amp_uncertainty_to_prior_ratio_mean": (
+                amp_uncertainty_to_prior_ratio_sum / total_sequences
             ),
         }
     )

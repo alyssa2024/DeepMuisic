@@ -63,7 +63,7 @@ CONFIG = {
     "loss": {
         "beta_freq": 0.1,
         "reconstruction": {
-            "type": "complex_gaussian_nll",
+            "type": "complex_gaussian_marginal_nll",
             "include_log_const": False,
             "use_posterior_sampling": True,
             "sequence_posterior_samples": 2,
@@ -73,8 +73,9 @@ CONFIG = {
         "amplitude_prior": {
             "enabled": True,
             "type": "centered_complex_gaussian_from_data_uniform",
+            "mode": "marginal_likelihood",
             "local_time_align": True,
-            "include_prior_penalty": True,
+            "include_prior_penalty": False,
             "min_tau2_norm": 1e-10,
         },
         "kl": {

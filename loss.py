@@ -362,6 +362,7 @@ def compute_sequence_posterior_recon_loss(
 
     amp_prior_cfg = amp_prior_cfg or {}
     use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
+    amp_mode = amp_prior_cfg.get("mode", "map")
     include_prior_penalty = bool(amp_prior_cfg.get("include_prior_penalty", True))
     if use_amp_prior:
         prior_type = amp_prior_cfg.get(
@@ -374,6 +375,8 @@ def compute_sequence_posterior_recon_loss(
             raise ValueError(
                 "Stage 3A amplitude prior requires signal_cfg, amp_scale, and t0"
             )
+        if amp_mode not in ("map", "marginal_likelihood"):
+            raise ValueError(f"Unsupported amplitude_prior.mode={amp_mode!r}")
 
     y_hat_samples = []
     c_hat_samples = []
@@ -381,10 +384,16 @@ def compute_sequence_posterior_recon_loss(
     amp_prior_mean_samples = []
     amp_prior_var_samples = []
     amp_lambda_samples = []
+    marginal_nll_samples = []
+    marginal_quad_samples = []
+    marginal_logdet_samples = []
+    amp_post_var_trace_samples = []
+    amp_post_std_samples = []
+    amp_uncertainty_ratio_samples = []
 
     for s in range(f_samples.shape[0]):
         f_s = f_samples[s]
-        if use_amp_prior:
+        if use_amp_prior and amp_mode == "map":
             amp_prior_mean_s, amp_prior_var_s = build_normalized_amp_prior(
                 f=f_s,
                 t0=t0,
@@ -406,6 +415,39 @@ def compute_sequence_posterior_recon_loss(
             amp_prior_mean_samples.append(amp_prior_mean_s)
             amp_prior_var_samples.append(amp_prior_var_s)
             amp_lambda_samples.append(noise_var[:, None] / amp_prior_var_s.clamp_min(eps))
+        elif use_amp_prior and amp_mode == "marginal_likelihood":
+            amp_prior_mean_s, amp_prior_var_s = build_normalized_amp_prior(
+                f=f_s,
+                t0=t0,
+                amp_scale=amp_scale,
+                signal_cfg=signal_cfg,
+                amp_prior_cfg=amp_prior_cfg,
+                eps=eps,
+            )
+            nll_s, c_s, post_var_diag_s, bayes_diag_s = model.amplitude_marginal_nll(
+                y_complex=y_complex,
+                f=f_s,
+                t=t,
+                amp_prior_mean=amp_prior_mean_s,
+                amp_prior_var=amp_prior_var_s,
+                noise_var_norm=noise_var,
+                include_log_const=include_log_const,
+                eps=eps,
+            )
+            amp_real_s = c_s.real
+            amp_imag_s = c_s.imag
+            cond_s = bayes_diag_s["bayes_cond"]
+            amp_prior_mean_samples.append(amp_prior_mean_s)
+            amp_prior_var_samples.append(amp_prior_var_s)
+            amp_lambda_samples.append(noise_var[:, None] / amp_prior_var_s.clamp_min(eps))
+            marginal_nll_samples.append(nll_s)
+            marginal_quad_samples.append(bayes_diag_s["marginal_quad"])
+            marginal_logdet_samples.append(bayes_diag_s["marginal_logdet"])
+            amp_post_var_trace_samples.append(bayes_diag_s["amp_post_var_trace"])
+            amp_post_std_samples.append(bayes_diag_s["amp_post_std_mean"])
+            amp_uncertainty_ratio_samples.append(
+                bayes_diag_s["amp_uncertainty_to_prior_ratio_mean"]
+            )
         else:
             amp_real_s, amp_imag_s, c_s, cond_s = model.solve_amplitudes_ls(
                 y_complex=y_complex,
@@ -449,23 +491,48 @@ def compute_sequence_posterior_recon_loss(
     amp_lambda_min = zero
     amp_lambda_max = zero
     amp_prior_var_norm_mean = zero
+    marginal_nll = zero
+    marginal_quad = zero
+    marginal_logdet = zero
+    amp_post_var_trace = zero
+    amp_post_std_mean = zero
+    amp_uncertainty_to_prior_ratio_mean = zero
     if use_amp_prior:
         amp_prior_mean_samples = torch.stack(amp_prior_mean_samples, dim=0)
         amp_prior_var_samples = torch.stack(amp_prior_var_samples, dim=0)
         amp_lambda_samples = torch.stack(amp_lambda_samples, dim=0)
-        amp_prior_quad_per_sequence = (
-            torch.abs(c_hat_samples - amp_prior_mean_samples) ** 2
-            / amp_prior_var_samples.clamp_min(eps)
-        ).sum(dim=-1)
-        if include_prior_penalty:
-            amp_prior_quad = amp_prior_quad_per_sequence.mean()
         amp_lambda_mean = amp_lambda_samples.mean()
         amp_lambda_min = amp_lambda_samples.min()
         amp_lambda_max = amp_lambda_samples.max()
         amp_prior_var_norm_mean = amp_prior_var_samples.mean()
+        if amp_mode == "map":
+            amp_prior_quad_per_sequence = (
+                torch.abs(c_hat_samples - amp_prior_mean_samples) ** 2
+                / amp_prior_var_samples.clamp_min(eps)
+            ).sum(dim=-1)
+            if include_prior_penalty:
+                amp_prior_quad = amp_prior_quad_per_sequence.mean()
+        elif amp_mode == "marginal_likelihood":
+            marginal_nll = torch.stack(marginal_nll_samples).mean()
+            marginal_quad = torch.stack(marginal_quad_samples).mean()
+            marginal_logdet = torch.stack(marginal_logdet_samples).mean()
+            amp_post_var_trace = torch.stack(amp_post_var_trace_samples).mean()
+            amp_post_std_mean = torch.stack(amp_post_std_samples).mean()
+            amp_uncertainty_to_prior_ratio_mean = torch.stack(
+                amp_uncertainty_ratio_samples
+            ).mean()
 
     recon_loss_base = recon_nll_full if include_log_const else recon_nll_core
-    recon_loss = recon_loss_base + amp_prior_quad
+    if use_amp_prior and amp_mode == "marginal_likelihood":
+        recon_loss = marginal_nll
+        recon_nll_core = marginal_nll
+        recon_nll_full = (
+            marginal_nll
+            if include_log_const
+            else marginal_nll + y_complex.shape[1] * math.log(math.pi)
+        )
+    else:
+        recon_loss = recon_loss_base + amp_prior_quad
 
     amp_norm = torch.linalg.norm(c_hat_samples, dim=-1)
     diagnostics = {
@@ -480,6 +547,12 @@ def compute_sequence_posterior_recon_loss(
         "amp_lambda_min": amp_lambda_min,
         "amp_lambda_max": amp_lambda_max,
         "amp_prior_var_norm_mean": amp_prior_var_norm_mean,
+        "marginal_nll": marginal_nll,
+        "marginal_quad": marginal_quad,
+        "marginal_logdet": marginal_logdet,
+        "amp_post_var_trace": amp_post_var_trace,
+        "amp_post_std_mean": amp_post_std_mean,
+        "amp_uncertainty_to_prior_ratio_mean": amp_uncertainty_to_prior_ratio_mean,
         "noise_var_norm_mean": noise_var.mean(),
         "noise_var_norm_min": noise_var.min(),
         "noise_var_norm_max": noise_var.max(),

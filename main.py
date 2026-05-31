@@ -390,6 +390,12 @@ def main():
                 "amp_prior_var_norm_mean": 0.0,
                 "map_amp_norm_mean": 0.0,
                 "map_amp_norm_p95": 0.0,
+                "marginal_nll": 0.0,
+                "marginal_quad": 0.0,
+                "marginal_logdet": 0.0,
+                "amp_post_var_trace": 0.0,
+                "amp_post_std_mean": 0.0,
+                "amp_uncertainty_to_prior_ratio_mean": 0.0,
             }
             train_batches = 0
 
@@ -474,6 +480,12 @@ def main():
                     "amp_prior_var_norm_mean",
                     "map_amp_norm_mean",
                     "map_amp_norm_p95",
+                    "marginal_nll",
+                    "marginal_quad",
+                    "marginal_logdet",
+                    "amp_post_var_trace",
+                    "amp_post_std_mean",
+                    "amp_uncertainty_to_prior_ratio_mean",
                 ):
                     train_sums[key] += float(loss_diag[key].item())
 
@@ -538,6 +550,9 @@ def main():
                 f"posterior_std={train_means['posterior_std_hz_mean']:.4f} "
                 f"outside={train_means['freq_sample_outside_rate']:.4f} "
                 f"ls_cond={train_means['ls_cond_mean']:.3e} "
+                f"marginal_quad={train_means['marginal_quad']:.3e} "
+                f"marginal_logdet={train_means['marginal_logdet']:.3e} "
+                f"amp_post_std={train_means['amp_post_std_mean']:.3e} "
                 f"amp_prior_quad={train_means['amp_prior_quad']:.3e} "
                 f"map_amp_norm={train_means['map_amp_norm_mean']:.3e} "
                 f"lr={current_lr:.3e}"
@@ -627,6 +642,9 @@ def main():
                     f"complex_rel_err={val_metrics['complex_coeff_rel_err_mean']:.4f} "
                     f"complex_success={val_metrics['complex_coeff_success_rate']:.4f} "
                     f"posterior_std={val_metrics['posterior_std_hz_mean']:.4f} "
+                    f"amp_post_std={val_metrics.get('amp_post_std_norm_mean', 0.0):.3e} "
+                    f"marginal_quad={val_metrics.get('marginal_quad', 0.0):.3e} "
+                    f"marginal_logdet={val_metrics.get('marginal_logdet', 0.0):.3e} "
                     f"outside={val_metrics['freq_sample_outside_rate']:.4f} "
                     f"ls_cond_p95={val_metrics['ls_cond_p95']:.3e} "
                     f"ls_amp_norm_p95={val_metrics['ls_amp_norm_p95']:.3e} "
