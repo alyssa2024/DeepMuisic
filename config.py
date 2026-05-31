@@ -61,7 +61,7 @@ CONFIG = {
         "ls_ridge": 1e-5,
     },
     "loss": {
-        "beta_freq": 1.0,
+        "beta_freq": 0.1,
         "reconstruction": {
             "type": "complex_gaussian_nll",
             "include_log_const": False,
@@ -69,6 +69,13 @@ CONFIG = {
             "sequence_posterior_samples": 2,
             "sample_at_train": True,
             "eval_at_mean": True,
+        },
+        "amplitude_prior": {
+            "enabled": True,
+            "type": "centered_complex_gaussian_from_data_uniform",
+            "local_time_align": True,
+            "include_prior_penalty": True,
+            "min_tau2_norm": 1e-10,
         },
         "kl": {
             "enabled": True,

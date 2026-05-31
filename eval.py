@@ -2,7 +2,11 @@ from typing import Dict
 
 import torch
 
-from loss import compute_sequence_posterior_recon_loss, kl_trunc_normal_trunc_normal
+from loss import (
+    build_normalized_amp_prior,
+    compute_sequence_posterior_recon_loss,
+    kl_trunc_normal_trunc_normal,
+)
 
 
 def _complex_ri_mse(x_hat_complex: torch.Tensor, target_ri: torch.Tensor) -> torch.Tensor:
@@ -41,6 +45,7 @@ def evaluate_model(
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
     loss_cfg: Dict,
+    signal_cfg: Dict = None,
     dense_factor: int = 4,
 ) -> Dict[str, float]:
     del dense_factor  # Kept in the signature for runner compatibility.
@@ -52,6 +57,7 @@ def evaluate_model(
         "recon_mse_sampled": 0.0,
         "recon_nll_sampled": 0.0,
         "recon_nll_full": 0.0,
+        "amp_prior_quad": 0.0,
     }
 
     success_cfg = loss_cfg.get("success", {})
@@ -97,10 +103,17 @@ def evaluate_model(
     freq_kl_raw_sum = 0.0
     ls_cond_sum = 0.0
     ls_amp_norm_sum = 0.0
+    amp_lambda_mean_sum = 0.0
+    amp_prior_var_norm_mean_sum = 0.0
 
     posterior_std_values = []
     ls_cond_values = []
     ls_amp_norm_values = []
+
+    amp_prior_cfg = dict(loss_cfg.get("amplitude_prior", {}))
+    if signal_cfg is None:
+        amp_prior_cfg["enabled"] = False
+    use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
 
     with torch.no_grad():
         for batch in dataloader:
@@ -140,13 +153,35 @@ def evaluate_model(
                 complex_success_sum = torch.zeros(k_count, dtype=torch.float64)
                 phase_circ_err_sum = torch.zeros(k_count, dtype=torch.float64)
 
-            amp_real_mean, amp_imag_mean, c_mean, cond_mean = model.solve_amplitudes_ls(
-                y_complex=y_complex,
-                f=mu_f,
-                t=t_local,
-                ridge_lambda=model.ls_ridge,
-                return_condition=True,
-            )
+            if use_amp_prior:
+                amp_prior_mean, amp_prior_var = build_normalized_amp_prior(
+                    f=mu_f,
+                    t0=t0.squeeze(1),
+                    amp_scale=amp_scale,
+                    signal_cfg=signal_cfg,
+                    amp_prior_cfg=amp_prior_cfg,
+                )
+                amp_real_mean, amp_imag_mean, c_mean, cond_mean = (
+                    model.solve_amplitudes_map(
+                        y_complex=y_complex,
+                        f=mu_f,
+                        t=t_local,
+                        amp_prior_mean=amp_prior_mean,
+                        amp_prior_var=amp_prior_var,
+                        noise_var_norm=noise_var_norm,
+                        return_condition=True,
+                    )
+                )
+            else:
+                amp_real_mean, amp_imag_mean, c_mean, cond_mean = (
+                    model.solve_amplitudes_ls(
+                        y_complex=y_complex,
+                        f=mu_f,
+                        t=t_local,
+                        ridge_lambda=model.ls_ridge,
+                        return_condition=True,
+                    )
+                )
             x_hat_mean = model.decode(
                 amp_real=amp_real_mean,
                 amp_imag=amp_imag_mean,
@@ -155,7 +190,7 @@ def evaluate_model(
             )
             recon_mse_mean = _complex_ri_mse(x_hat_mean, target_batch)
 
-            recon_nll_sampled, sampled_diag = compute_sequence_posterior_recon_loss(
+            sampled_recon_loss, sampled_diag = compute_sequence_posterior_recon_loss(
                 y_complex=y_complex,
                 t=t_local,
                 mu_f=mu_f,
@@ -165,8 +200,13 @@ def evaluate_model(
                 ridge_lambda=model.ls_ridge,
                 noise_var_norm=noise_var_norm,
                 include_log_const=False,
+                amp_scale=amp_scale,
+                t0=t0.squeeze(1),
+                signal_cfg=signal_cfg,
+                amp_prior_cfg=amp_prior_cfg,
             )
             recon_mse_sampled = sampled_diag["recon_mse_sampled"]
+            recon_nll_sampled = sampled_diag["recon_nll"]
             recon_nll_full = sampled_diag["recon_nll_full"]
 
             lower = model.encoder.freq_lower.to(device=mu_f.device, dtype=mu_f.dtype)
@@ -237,7 +277,7 @@ def evaluate_model(
                 total_order_pairs += order_ok.numel()
 
             beta_freq = float(loss_cfg.get("beta_freq", 1.0))
-            loss = recon_nll_sampled + beta_freq * freq_kl
+            loss = sampled_recon_loss + beta_freq * freq_kl
 
             total_sequences += n
             total_freq_elements += n * k_count
@@ -246,6 +286,7 @@ def evaluate_model(
             stats["recon_mse_sampled"] += recon_mse_sampled.item() * n
             stats["recon_nll_sampled"] += recon_nll_sampled.item() * n
             stats["recon_nll_full"] += recon_nll_full.item() * n
+            stats["amp_prior_quad"] += sampled_diag["amp_prior_quad"].item() * n
 
             freq_sqerr_sum += freq_err.pow(2).sum(dim=0).double().cpu()
             freq_abs_err_sum += freq_abs_err.sum(dim=0).double().cpu()
@@ -277,6 +318,10 @@ def evaluate_model(
             freq_kl_raw_sum += freq_kl_raw.item() * n
             ls_cond_sum += cond_mean.sum().item()
             ls_amp_norm_sum += c_norm_mean.sum().item()
+            amp_lambda_mean_sum += sampled_diag["amp_lambda_mean"].item() * n
+            amp_prior_var_norm_mean_sum += (
+                sampled_diag["amp_prior_var_norm_mean"].item() * n
+            )
 
             posterior_std_values.append(std_f.detach().reshape(-1).cpu())
             ls_cond_values.append(cond_mean.detach().reshape(-1).cpu())
@@ -347,6 +392,12 @@ def evaluate_model(
             "ls_cond_p95": float(torch.quantile(torch.cat(ls_cond_values), 0.95)),
             "ls_amp_norm_mean": ls_amp_norm_sum / total_sequences,
             "ls_amp_norm_p95": float(torch.quantile(torch.cat(ls_amp_norm_values), 0.95)),
+            "map_amp_norm_mean": ls_amp_norm_sum / total_sequences,
+            "map_amp_norm_p95": float(torch.quantile(torch.cat(ls_amp_norm_values), 0.95)),
+            "amp_lambda_mean": amp_lambda_mean_sum / total_sequences,
+            "amp_prior_var_norm_mean": (
+                amp_prior_var_norm_mean_sum / total_sequences
+            ),
         }
     )
 

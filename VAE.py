@@ -69,6 +69,73 @@ class PhysicalHarmonicVAE(nn.Module):
 
         return complex_amp.real, complex_amp.imag, complex_amp
 
+    def solve_amplitudes_map(
+        self,
+        y_complex,
+        f,
+        t,
+        amp_prior_mean,
+        amp_prior_var,
+        noise_var_norm,
+        return_condition=False,
+        eps=1e-12,
+    ):
+        """
+        Solve complex amplitudes with a centered Gaussian MAP estimate.
+
+        The prior is c ~ CN(amp_prior_mean, diag(amp_prior_var)).
+        """
+        if not torch.is_complex(y_complex):
+            raise TypeError(f"y_complex must be complex, got {y_complex.dtype}")
+        if not torch.is_complex(amp_prior_mean):
+            raise TypeError(
+                f"amp_prior_mean must be complex, got {amp_prior_mean.dtype}"
+            )
+        if f.ndim != 2:
+            raise ValueError(f"f must have shape [B, K], got {f.shape}")
+        if amp_prior_mean.shape != f.shape:
+            raise ValueError(
+                "amp_prior_mean shape must match f: "
+                f"{amp_prior_mean.shape} vs {f.shape}"
+            )
+        if amp_prior_var.shape != f.shape:
+            raise ValueError(
+                "amp_prior_var shape must match f: "
+                f"{amp_prior_var.shape} vs {f.shape}"
+            )
+        if noise_var_norm.ndim != 1 or noise_var_norm.shape[0] != f.shape[0]:
+            raise ValueError(
+                f"noise_var_norm must have shape [B], got {noise_var_norm.shape}"
+            )
+
+        phi = self.build_dictionary(f, t)
+        phi_h = phi.conj().transpose(-2, -1)
+
+        gram = phi_h @ phi
+        rhs = phi_h @ y_complex.unsqueeze(-1)
+
+        amp_prior_var = amp_prior_var.to(
+            device=gram.device,
+            dtype=gram.real.dtype,
+        ).clamp_min(eps)
+        noise_var_norm = noise_var_norm.to(
+            device=gram.device,
+            dtype=gram.real.dtype,
+        ).clamp_min(eps)
+        amp_prior_mean = amp_prior_mean.to(device=gram.device, dtype=gram.dtype)
+
+        lambda_bk = noise_var_norm[:, None] / amp_prior_var
+        map_mat = gram + torch.diag_embed(lambda_bk).to(dtype=gram.dtype)
+        map_rhs = rhs + (lambda_bk.to(dtype=gram.dtype) * amp_prior_mean).unsqueeze(-1)
+
+        complex_amp = torch.linalg.solve(map_mat, map_rhs).squeeze(-1)
+
+        if return_condition:
+            cond = torch.linalg.cond(map_mat)
+            return complex_amp.real, complex_amp.imag, complex_amp, cond
+
+        return complex_amp.real, complex_amp.imag, complex_amp
+
     def decode(self, amp_real, amp_imag, f, t):
         """
         Physics-informed deterministic decoder.

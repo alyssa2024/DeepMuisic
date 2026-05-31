@@ -383,6 +383,13 @@ def main():
                 "ls_cond_p95": 0.0,
                 "ls_amp_norm_mean": 0.0,
                 "ls_amp_norm_p95": 0.0,
+                "amp_prior_quad": 0.0,
+                "amp_lambda_mean": 0.0,
+                "amp_lambda_min": 0.0,
+                "amp_lambda_max": 0.0,
+                "amp_prior_var_norm_mean": 0.0,
+                "map_amp_norm_mean": 0.0,
+                "map_amp_norm_p95": 0.0,
             }
             train_batches = 0
 
@@ -392,7 +399,9 @@ def main():
                 probe_ids = batch["probe_ids"].to(device)
                 target_batch = batch["target"].to(device)
                 noise_var_norm = batch["noise_var_norm"].to(device)
-                t_local = t_batch - t_batch[:, :1]
+                amp_scale = batch["amp_scale"].to(device)
+                t0 = t_batch[:, :1]
+                t_local = t_batch - t0
 
                 optimizer.zero_grad()
                 model_outputs = model(x_batch, t_local, probe_ids=probe_ids)
@@ -403,6 +412,9 @@ def main():
                     t=t_local,
                     loss_cfg=loss_cfg,
                     noise_var_norm=noise_var_norm,
+                    amp_scale=amp_scale,
+                    t0=t0.squeeze(1),
+                    signal_cfg=signal_cfg,
                     global_step=total_steps + 1,
                 )
 
@@ -455,6 +467,13 @@ def main():
                     "ls_cond_p95",
                     "ls_amp_norm_mean",
                     "ls_amp_norm_p95",
+                    "amp_prior_quad",
+                    "amp_lambda_mean",
+                    "amp_lambda_min",
+                    "amp_lambda_max",
+                    "amp_prior_var_norm_mean",
+                    "map_amp_norm_mean",
+                    "map_amp_norm_p95",
                 ):
                     train_sums[key] += float(loss_diag[key].item())
 
@@ -519,7 +538,8 @@ def main():
                 f"posterior_std={train_means['posterior_std_hz_mean']:.4f} "
                 f"outside={train_means['freq_sample_outside_rate']:.4f} "
                 f"ls_cond={train_means['ls_cond_mean']:.3e} "
-                f"ls_amp_norm={train_means['ls_amp_norm_mean']:.3e} "
+                f"amp_prior_quad={train_means['amp_prior_quad']:.3e} "
+                f"map_amp_norm={train_means['map_amp_norm_mean']:.3e} "
                 f"lr={current_lr:.3e}"
             )
 
@@ -534,6 +554,7 @@ def main():
                     dataloader=val_loader,
                     device=device,
                     loss_cfg=loss_cfg,
+                    signal_cfg=signal_cfg,
                     dense_factor=dense_factor,
                 )
 

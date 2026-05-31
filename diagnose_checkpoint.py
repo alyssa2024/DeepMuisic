@@ -114,6 +114,7 @@ def main():
         dataloader=val_loader,
         device=device,
         loss_cfg=loss_cfg,
+        signal_cfg=signal_cfg,
         dense_factor=CONFIG.get("eval", {}).get("dense_factor", 4),
     )
 

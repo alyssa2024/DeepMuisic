@@ -212,6 +212,81 @@ def compute_beta_anneal(loss_cfg, step=None):
     return min(1.0, float(step) / float(warmup_steps))
 
 
+def build_normalized_amp_prior(
+    f,
+    t0,
+    amp_scale,
+    signal_cfg,
+    amp_prior_cfg=None,
+    eps=1e-12,
+):
+    """
+    Build the centered complex Gaussian amplitude prior in normalized space.
+
+    The generator defines raw global-time coefficients. Because the decoder
+    uses local time, the prior mean is phase-aligned to each sequence t0.
+    """
+    if f.ndim != 2:
+        raise ValueError(f"f must have shape [B, K], got {f.shape}")
+    if t0.ndim == 2 and t0.shape[1] == 1:
+        t0 = t0.squeeze(1)
+    if t0.ndim != 1 or t0.shape[0] != f.shape[0]:
+        raise ValueError(f"t0 must have shape [B], got {t0.shape}")
+    if amp_scale.ndim != 1 or amp_scale.shape[0] != f.shape[0]:
+        raise ValueError(f"amp_scale must have shape [B], got {amp_scale.shape}")
+
+    amp_prior_cfg = amp_prior_cfg or {}
+    data_prior_cfg = signal_cfg.get("amp_data_prior", {})
+    if data_prior_cfg.get("type", "independent_uniform") != "independent_uniform":
+        raise ValueError(
+            "Stage 3A amplitude prior currently expects "
+            "signal.amp_data_prior.type='independent_uniform'"
+        )
+
+    device = f.device
+    real_dtype = f.dtype
+    center_real = torch.as_tensor(
+        signal_cfg["amp_real_center_m"],
+        device=device,
+        dtype=real_dtype,
+    )
+    center_imag = torch.as_tensor(
+        signal_cfg["amp_imag_center_m"],
+        device=device,
+        dtype=real_dtype,
+    )
+    if center_real.shape != (f.shape[1],) or center_imag.shape != (f.shape[1],):
+        raise ValueError(
+            "Amplitude prior center length must match harmonic count: "
+            f"{center_real.shape}/{center_imag.shape} vs K={f.shape[1]}"
+        )
+
+    relative_half_band = float(data_prior_cfg.get("relative_half_band", 0.2))
+    min_half_band = float(data_prior_cfg.get("min_half_band_m", 1e-5))
+    min_half_band_t = torch.as_tensor(min_half_band, device=device, dtype=real_dtype)
+    real_half = relative_half_band * torch.maximum(center_real.abs(), min_half_band_t)
+    imag_half = relative_half_band * torch.maximum(center_imag.abs(), min_half_band_t)
+    amp_prior_var_raw = (real_half.pow(2) + imag_half.pow(2)) / 3.0
+
+    amp_prior_mean_raw = torch.complex(center_real, center_imag).view(1, -1)
+    if bool(amp_prior_cfg.get("local_time_align", True)):
+        phase_shift = 2.0 * torch.pi * f * t0.view(-1, 1)
+        amp_prior_mean_raw = amp_prior_mean_raw * torch.polar(
+            torch.ones_like(phase_shift),
+            phase_shift,
+        )
+    else:
+        amp_prior_mean_raw = amp_prior_mean_raw.expand(f.shape[0], -1)
+
+    amp_scale = amp_scale.to(device=device, dtype=real_dtype).clamp_min(eps)
+    amp_prior_mean = amp_prior_mean_raw / amp_scale.view(-1, 1)
+    amp_prior_var = amp_prior_var_raw.view(1, -1) / amp_scale.view(-1, 1).pow(2)
+
+    min_tau2_norm = float(amp_prior_cfg.get("min_tau2_norm", eps))
+    amp_prior_var = amp_prior_var.clamp_min(min_tau2_norm)
+    return amp_prior_mean, amp_prior_var
+
+
 def sample_sequence_frequencies(mu_f, std_f, num_samples, freq_lower, freq_upper):
     """
     Sample sequence-level frequency vectors from truncated Gaussian posterior.
@@ -246,6 +321,10 @@ def compute_sequence_posterior_recon_loss(
     f_samples=None,
     noise_var_norm=None,
     include_log_const=False,
+    amp_scale=None,
+    t0=None,
+    signal_cfg=None,
+    amp_prior_cfg=None,
     eps=1e-8,
 ):
     """
@@ -267,19 +346,74 @@ def compute_sequence_posterior_recon_loss(
                 f"f_samples shape {f_samples.shape} does not match mu_f {mu_f.shape}"
             )
 
+    if noise_var_norm is None:
+        noise_var = torch.ones(
+            y_complex.shape[0],
+            device=y_complex.device,
+            dtype=y_complex.real.dtype,
+        )
+    else:
+        noise_var = noise_var_norm.to(device=y_complex.device, dtype=y_complex.real.dtype)
+        if noise_var.ndim != 1 or noise_var.shape[0] != y_complex.shape[0]:
+            raise ValueError(
+                f"noise_var_norm must have shape [B], got {noise_var_norm.shape}"
+            )
+    noise_var = noise_var.clamp_min(eps)
+
+    amp_prior_cfg = amp_prior_cfg or {}
+    use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
+    include_prior_penalty = bool(amp_prior_cfg.get("include_prior_penalty", True))
+    if use_amp_prior:
+        prior_type = amp_prior_cfg.get(
+            "type",
+            "centered_complex_gaussian_from_data_uniform",
+        )
+        if prior_type != "centered_complex_gaussian_from_data_uniform":
+            raise ValueError(f"Unsupported amplitude_prior.type={prior_type!r}")
+        if signal_cfg is None or amp_scale is None or t0 is None:
+            raise ValueError(
+                "Stage 3A amplitude prior requires signal_cfg, amp_scale, and t0"
+            )
+
     y_hat_samples = []
     c_hat_samples = []
     ls_cond_samples = []
+    amp_prior_mean_samples = []
+    amp_prior_var_samples = []
+    amp_lambda_samples = []
 
     for s in range(f_samples.shape[0]):
         f_s = f_samples[s]
-        amp_real_s, amp_imag_s, c_s, cond_s = model.solve_amplitudes_ls(
-            y_complex=y_complex,
-            f=f_s,
-            t=t,
-            ridge_lambda=ridge_lambda,
-            return_condition=True,
-        )
+        if use_amp_prior:
+            amp_prior_mean_s, amp_prior_var_s = build_normalized_amp_prior(
+                f=f_s,
+                t0=t0,
+                amp_scale=amp_scale,
+                signal_cfg=signal_cfg,
+                amp_prior_cfg=amp_prior_cfg,
+                eps=eps,
+            )
+            amp_real_s, amp_imag_s, c_s, cond_s = model.solve_amplitudes_map(
+                y_complex=y_complex,
+                f=f_s,
+                t=t,
+                amp_prior_mean=amp_prior_mean_s,
+                amp_prior_var=amp_prior_var_s,
+                noise_var_norm=noise_var,
+                return_condition=True,
+                eps=eps,
+            )
+            amp_prior_mean_samples.append(amp_prior_mean_s)
+            amp_prior_var_samples.append(amp_prior_var_s)
+            amp_lambda_samples.append(noise_var[:, None] / amp_prior_var_s.clamp_min(eps))
+        else:
+            amp_real_s, amp_imag_s, c_s, cond_s = model.solve_amplitudes_ls(
+                y_complex=y_complex,
+                f=f_s,
+                t=t,
+                ridge_lambda=ridge_lambda,
+                return_condition=True,
+            )
         y_hat_s = model.decode(
             amp_real=amp_real_s,
             amp_imag=amp_imag_s,
@@ -302,27 +436,36 @@ def compute_sequence_posterior_recon_loss(
     sqerr = torch.abs(y_hat_samples - y_complex.unsqueeze(0)) ** 2
     recon_mse = sqerr.mean()
 
-    if noise_var_norm is None:
-        noise_var = torch.ones(
-            y_complex.shape[0],
-            device=y_complex.device,
-            dtype=sqerr.dtype,
-        )
-    else:
-        noise_var = noise_var_norm.to(device=y_complex.device, dtype=sqerr.dtype)
-        if noise_var.ndim != 1 or noise_var.shape[0] != y_complex.shape[0]:
-            raise ValueError(
-                f"noise_var_norm must have shape [B], got {noise_var_norm.shape}"
-            )
-    noise_var = noise_var.clamp_min(eps)
-
     recon_nll_core_per_sequence = (
         sqerr / noise_var.view(1, -1, 1)
     ).sum(dim=-1)
     recon_nll_core = recon_nll_core_per_sequence.mean()
     log_const = y_complex.shape[1] * torch.log(math.pi * noise_var).mean()
     recon_nll_full = recon_nll_core + log_const
-    recon_loss = recon_nll_full if include_log_const else recon_nll_core
+
+    zero = torch.zeros((), device=y_complex.device, dtype=sqerr.dtype)
+    amp_prior_quad = zero
+    amp_lambda_mean = zero
+    amp_lambda_min = zero
+    amp_lambda_max = zero
+    amp_prior_var_norm_mean = zero
+    if use_amp_prior:
+        amp_prior_mean_samples = torch.stack(amp_prior_mean_samples, dim=0)
+        amp_prior_var_samples = torch.stack(amp_prior_var_samples, dim=0)
+        amp_lambda_samples = torch.stack(amp_lambda_samples, dim=0)
+        amp_prior_quad_per_sequence = (
+            torch.abs(c_hat_samples - amp_prior_mean_samples) ** 2
+            / amp_prior_var_samples.clamp_min(eps)
+        ).sum(dim=-1)
+        if include_prior_penalty:
+            amp_prior_quad = amp_prior_quad_per_sequence.mean()
+        amp_lambda_mean = amp_lambda_samples.mean()
+        amp_lambda_min = amp_lambda_samples.min()
+        amp_lambda_max = amp_lambda_samples.max()
+        amp_prior_var_norm_mean = amp_prior_var_samples.mean()
+
+    recon_loss_base = recon_nll_full if include_log_const else recon_nll_core
+    recon_loss = recon_loss_base + amp_prior_quad
 
     amp_norm = torch.linalg.norm(c_hat_samples, dim=-1)
     diagnostics = {
@@ -332,6 +475,11 @@ def compute_sequence_posterior_recon_loss(
         "recon_mse_sampled": recon_mse,
         "recon_nll": recon_nll_core,
         "recon_nll_full": recon_nll_full,
+        "amp_prior_quad": amp_prior_quad,
+        "amp_lambda_mean": amp_lambda_mean,
+        "amp_lambda_min": amp_lambda_min,
+        "amp_lambda_max": amp_lambda_max,
+        "amp_prior_var_norm_mean": amp_prior_var_norm_mean,
         "noise_var_norm_mean": noise_var.mean(),
         "noise_var_norm_min": noise_var.min(),
         "noise_var_norm_max": noise_var.max(),
@@ -340,6 +488,8 @@ def compute_sequence_posterior_recon_loss(
         "ls_cond_p95": torch.quantile(ls_cond_samples.reshape(-1), 0.95),
         "ls_amp_norm_mean": amp_norm.mean(),
         "ls_amp_norm_p95": torch.quantile(amp_norm.reshape(-1), 0.95),
+        "map_amp_norm_mean": amp_norm.mean(),
+        "map_amp_norm_p95": torch.quantile(amp_norm.reshape(-1), 0.95),
     }
 
     return recon_loss, diagnostics
@@ -370,6 +520,9 @@ def compute_harmonic_loss(
     t,
     loss_cfg,
     noise_var_norm=None,
+    amp_scale=None,
+    t0=None,
+    signal_cfg=None,
     global_step=None,
 ):
     """
@@ -396,6 +549,10 @@ def compute_harmonic_loss(
         ridge_lambda=model.ls_ridge,
         noise_var_norm=noise_var_norm,
         include_log_const=include_log_const,
+        amp_scale=amp_scale,
+        t0=t0,
+        signal_cfg=signal_cfg,
+        amp_prior_cfg=loss_cfg.get("amplitude_prior", {}),
     )
 
     kl_cfg = loss_cfg.get("kl", {})
