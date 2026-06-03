@@ -33,6 +33,85 @@ class PositionalEncoding(torch.nn.Module):
         return x + self.pe[:, : x.size(1)]
 
 
+class ContinuousTimePositionalEncoding(torch.nn.Module):
+    """
+    Continuous-time sinusoidal positional encoding.
+
+    tau is normalized local time with shape [B, L], typically in [0, 1].
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_bands: int = 64,
+        trainable_proj: bool = True,
+        min_freq: float = 1.0,
+        max_freq: float = 10000.0,
+    ):
+        super().__init__()
+
+        if num_bands < 1:
+            raise ValueError(f"num_bands must be >= 1, got {num_bands}")
+        if min_freq <= 0 or max_freq <= 0:
+            raise ValueError("min_freq and max_freq must be positive")
+        if max_freq < min_freq:
+            raise ValueError("max_freq must be >= min_freq")
+
+        self.d_model = int(d_model)
+        self.num_bands = int(num_bands)
+        self.trainable_proj = bool(trainable_proj)
+
+        if num_bands == 1:
+            freqs = torch.tensor([float(min_freq)], dtype=torch.float32)
+        else:
+            freqs = torch.exp(
+                torch.linspace(
+                    math.log(float(min_freq)),
+                    math.log(float(max_freq)),
+                    steps=num_bands,
+                    dtype=torch.float32,
+                )
+            )
+        self.register_buffer("freqs", freqs)
+
+        raw_dim = 2 * num_bands
+        if trainable_proj:
+            self.proj = torch.nn.Linear(raw_dim, d_model)
+        else:
+            if raw_dim != d_model:
+                raise ValueError(
+                    "When trainable_proj=False, 2*num_bands must equal d_model. "
+                    f"Got 2*num_bands={raw_dim}, d_model={d_model}."
+                )
+            self.proj = torch.nn.Identity()
+
+    def forward(self, x: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x:   [B, L, d_model]
+            tau: [B, L], normalized local time
+
+        Returns:
+            x + continuous-time positional encoding, shape [B, L, d_model]
+        """
+        if x.ndim != 3:
+            raise ValueError(f"x must have shape [B, L, d_model], got {x.shape}")
+        if tau.ndim != 2:
+            raise ValueError(f"tau must have shape [B, L], got {tau.shape}")
+        if tau.shape != x.shape[:2]:
+            raise ValueError(
+                f"tau shape {tau.shape} must match x batch/length {x.shape[:2]}"
+            )
+
+        tau = tau.to(device=x.device, dtype=x.dtype)
+        freqs = self.freqs.to(device=x.device, dtype=x.dtype)
+        phase = 2.0 * math.pi * tau.unsqueeze(-1) * freqs.view(1, 1, -1)
+        pe_raw = torch.cat([torch.sin(phase), torch.cos(phase)], dim=-1)
+        pe = self.proj(pe_raw)
+
+        return x + pe
+
+
 @gin.configurable
 class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
     def __init__(
@@ -48,6 +127,10 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         max_len=5000,
         num_probes=4,
         use_standard_pe=False,
+        use_time_pe=False,
+        time_feature_index=-1,
+        time_pe_num_bands=64,
+        time_pe_trainable_proj=True,
         causal_mask=False,
         device="cpu",
         freq_lower_hz=None,
@@ -67,11 +150,29 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         self.input_proj = torch.nn.Linear(input_dim, hidden_dim)
         self.probe_embedding = torch.nn.Embedding(num_probes, hidden_dim)
 
-        self.use_standard_pe = use_standard_pe
-        if use_standard_pe:
+        self.use_standard_pe = bool(use_standard_pe)
+        self.use_time_pe = bool(use_time_pe)
+        self.time_feature_index = int(time_feature_index)
+
+        if self.use_standard_pe and self.use_time_pe:
+            raise ValueError(
+                "use_standard_pe and use_time_pe should not be enabled together. "
+                "Use use_time_pe=True for continuous-time positional encoding."
+            )
+
+        if self.use_standard_pe:
             self.pos_encoder = PositionalEncoding(hidden_dim, max_len)
         else:
             self.pos_encoder = None
+
+        if self.use_time_pe:
+            self.time_pos_encoder = ContinuousTimePositionalEncoding(
+                d_model=hidden_dim,
+                num_bands=int(time_pe_num_bands),
+                trainable_proj=bool(time_pe_trainable_proj),
+            )
+        else:
+            self.time_pos_encoder = None
 
         encoder_layer = torch.nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -138,7 +239,8 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
     def forward(self, x, probe_ids=None, Cws=None):
         """
         x:        [B, L, input_dim]
-                  input_dim=6 without local-time feature, 7 with normalized local-time feature
+                  input_dim=7 when normalized local-time feature is used.
+                  Continuous-time PE reads x[..., time_feature_index].
         probe_ids:[B, L]
         """
         batch_size = x.size(0)
@@ -151,6 +253,15 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         if self.use_standard_pe:
             x_transformer = self.pos_encoder(x_transformer)
+
+        if self.use_time_pe:
+            if not (-x.size(-1) <= self.time_feature_index < x.size(-1)):
+                raise ValueError(
+                    f"time_feature_index={self.time_feature_index} is invalid "
+                    f"for input_dim={x.size(-1)}"
+                )
+            tau = x[..., self.time_feature_index]
+            x_transformer = self.time_pos_encoder(x_transformer, tau)
 
         if self._causal_mask:
             mask = self.generate_causal_mask(seq_len)
