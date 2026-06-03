@@ -209,6 +209,7 @@ def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_u
         snr_db=signal_cfg["snr_db"],
         seed=seed,
         normalization=data_cfg.get("normalization", "per_sequence_std"),
+        include_local_time_norm=data_cfg.get("include_local_time_norm", False),
     )
 
 

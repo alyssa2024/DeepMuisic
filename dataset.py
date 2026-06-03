@@ -18,12 +18,13 @@ def build_btt_point_features(
     freqs_at_samples,
     base_freq,
     n_revs,
+    include_local_time_norm=False,
 ):
     """
     Build BTT token features.
 
     Returns:
-        features:  float32 array, shape [N, 6]
+        features:  float32 array, shape [N, 6] or [N, 7]
         t_samples: float32 array, shape [N]
         rev_ids:   int64 array, shape [N]
         probe_ids: int64 array, shape [N]
@@ -38,17 +39,22 @@ def build_btt_point_features(
     rev_norm = rev_ids / max(n_revs - 1, 1)
     speed_norm = freqs_at_samples / base_freq
 
-    features = np.stack(
-        [
-            x_real,
-            x_imag,
-            sin_theta,
-            cos_theta,
-            rev_norm,
-            speed_norm,
-        ],
-        axis=-1,
-    ).astype(np.float32)
+    feature_list = [
+        x_real,
+        x_imag,
+        sin_theta,
+        cos_theta,
+        rev_norm,
+        speed_norm,
+    ]
+
+    if include_local_time_norm:
+        t0 = t_samples[0]
+        duration = t_samples[-1] - t0
+        local_time_norm = (t_samples - t0) / (duration + 1e-12)
+        feature_list.append(local_time_norm)
+
+    features = np.stack(feature_list, axis=-1).astype(np.float32)
 
     return (
         features,
@@ -80,6 +86,7 @@ class BTTSequenceDataset(Dataset):
         snr_db,
         seed=0,
         normalization="per_sequence_std",
+        include_local_time_norm=False,
     ):
         self.num_sequences = int(num_sequences)
         self.num_cycles = int(num_cycles)
@@ -96,6 +103,7 @@ class BTTSequenceDataset(Dataset):
         self.snr_db = snr_db
         self.seed = int(seed)
         self.normalization = normalization
+        self.include_local_time_norm = bool(include_local_time_norm)
 
         if self.freq_lower.shape != self.freq_upper.shape:
             raise ValueError("freq_lower and freq_upper must have the same shape")
@@ -155,6 +163,7 @@ class BTTSequenceDataset(Dataset):
             freqs_at_samples=sample["freqs_at_samples"],
             base_freq=self.base_freq,
             n_revs=self.num_cycles,
+            include_local_time_norm=self.include_local_time_norm,
         )
 
         target = features[:, :2]

@@ -138,6 +138,7 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
     def forward(self, x, probe_ids=None, Cws=None):
         """
         x:        [B, L, input_dim]
+                  input_dim=6 without local-time feature, 7 with normalized local-time feature
         probe_ids:[B, L]
         """
         batch_size = x.size(0)

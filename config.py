@@ -7,7 +7,8 @@ Edit values here, then run `main.py`.
 CONFIG = {
     "seed": 42,
     "data": {
-        "input_dim": 6,
+        "input_dim": 7,
+        "include_local_time_norm": True,
         "num_harmonics": 4,
         "num_probes": 4,
         "base_freq": 150.0,

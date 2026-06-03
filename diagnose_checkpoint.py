@@ -38,6 +38,7 @@ def _build_val_loader(data_cfg, signal_cfg, freq_lower, freq_upper, seed):
         snr_db=signal_cfg["snr_db"],
         seed=seed + 100000,
         normalization=data_cfg.get("normalization", "per_sequence_std"),
+        include_local_time_norm=data_cfg.get("include_local_time_norm", False),
     )
     return DataLoader(
         val_set,
