@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import CONFIG
-from dataset import BTTSequenceDataset
+from dataset import BTTSequenceDataset, GroupedBTTSequenceDataset
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from eval import evaluate_model
 from synthesis_dataset import compute_frequency_support
@@ -22,23 +22,76 @@ def set_global_seed(seed: int):
 
 def _build_val_loader(data_cfg, signal_cfg, freq_lower, freq_upper, seed):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
-    val_set = BTTSequenceDataset(
-        num_sequences=data_cfg["num_val_sequences"],
-        num_cycles=data_cfg["num_cycles"],
-        num_probes=data_cfg["num_probes"],
-        base_freq=data_cfg["base_freq"],
-        fluctuation_delta=data_cfg["fluctuation_delta"],
-        probe_angles=data_cfg["probes"],
-        freq_lower=freq_lower,
-        freq_upper=freq_upper,
-        amp_real_center=signal_cfg["amp_real_center_m"],
-        amp_imag_center=signal_cfg["amp_imag_center_m"],
-        amp_relative_half_band=amp_prior_cfg["relative_half_band"],
-        amp_min_half_band=amp_prior_cfg["min_half_band_m"],
-        snr_db=signal_cfg["snr_db"],
-        seed=seed + 100000,
-        normalization=data_cfg.get("normalization", "per_sequence_std"),
-    )
+    train_dataset_cfg = data_cfg.get("train_dataset", None)
+    if train_dataset_cfg is None:
+        val_set = BTTSequenceDataset(
+            num_sequences=data_cfg["num_val_sequences"],
+            num_cycles=data_cfg["num_cycles"],
+            num_probes=data_cfg["num_probes"],
+            base_freq=data_cfg["base_freq"],
+            fluctuation_delta=data_cfg["fluctuation_delta"],
+            probe_angles=data_cfg["probes"],
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            amp_real_center=signal_cfg["amp_real_center_m"],
+            amp_imag_center=signal_cfg["amp_imag_center_m"],
+            amp_relative_half_band=amp_prior_cfg["relative_half_band"],
+            amp_min_half_band=amp_prior_cfg["min_half_band_m"],
+            snr_db=signal_cfg["snr_db"],
+            seed=seed + 100000,
+            normalization=data_cfg.get("normalization", "per_sequence_std"),
+            include_local_time_norm=data_cfg.get("include_local_time_norm", False),
+            split="val",
+        )
+    else:
+        if train_dataset_cfg.get("chronological_split", False):
+            val_dataset_cfg = train_dataset_cfg
+            split = "val"
+            val_seed = seed
+        else:
+            val_dataset_cfg = data_cfg.get(
+                "val_dataset",
+                {
+                    **train_dataset_cfg,
+                    "num_param_sets": data_cfg.get("num_val_sequences", 2000),
+                    "sequences_per_param": 1,
+                    "use_long_sequence": False,
+                    "chronological_split": False,
+                    "sequence_num_cycles": data_cfg["num_cycles"],
+                },
+            )
+            split = "val"
+            val_seed = seed + 100000
+
+        short_num_cycles = val_dataset_cfg.get("sequence_num_cycles", data_cfg["num_cycles"])
+        val_set = GroupedBTTSequenceDataset(
+            split=split,
+            num_param_sets=val_dataset_cfg["num_param_sets"],
+            sequences_per_param=val_dataset_cfg["sequences_per_param"],
+            use_long_sequence=val_dataset_cfg.get("use_long_sequence", False),
+            short_num_cycles=short_num_cycles,
+            long_sequence_num_cycles=val_dataset_cfg.get(
+                "long_sequence_num_cycles",
+                short_num_cycles,
+            ),
+            window_hop_cycles=val_dataset_cfg.get("window_hop_cycles", 1),
+            chronological_split=val_dataset_cfg.get("chronological_split", False),
+            train_ratio=val_dataset_cfg.get("train_ratio", 0.8),
+            num_probes=data_cfg["num_probes"],
+            base_freq=data_cfg["base_freq"],
+            fluctuation_delta=data_cfg["fluctuation_delta"],
+            probe_angles=data_cfg["probes"],
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            amp_real_center=signal_cfg["amp_real_center_m"],
+            amp_imag_center=signal_cfg["amp_imag_center_m"],
+            amp_relative_half_band=amp_prior_cfg["relative_half_band"],
+            amp_min_half_band=amp_prior_cfg["min_half_band_m"],
+            snr_db=signal_cfg["snr_db"],
+            seed=val_seed,
+            normalization=data_cfg.get("normalization", "per_sequence_std"),
+            include_local_time_norm=data_cfg.get("include_local_time_norm", False),
+        )
     return DataLoader(
         val_set,
         batch_size=data_cfg["batch_size"],
@@ -92,7 +145,11 @@ def main():
         dim_feedforward=model_cfg["dim_feedforward"],
         hidden_dim_dense=model_cfg["hidden_dim_dense"],
         num_probes=data_cfg["num_probes"],
-        use_standard_pe=model_cfg["use_standard_pe"],
+        use_standard_pe=model_cfg.get("use_standard_pe", False),
+        use_time_pe=model_cfg.get("use_time_pe", False),
+        time_feature_index=model_cfg.get("time_feature_index", -1),
+        time_pe_num_bands=model_cfg.get("time_pe_num_bands", 64),
+        time_pe_trainable_proj=model_cfg.get("time_pe_trainable_proj", True),
         device=device,
         freq_lower_hz=freq_lower,
         freq_upper_hz=freq_upper,

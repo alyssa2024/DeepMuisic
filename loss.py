@@ -212,6 +212,50 @@ def compute_beta_anneal(loss_cfg, step=None):
     return min(1.0, float(step) / float(warmup_steps))
 
 
+def _validate_dataset_state_for_current_loss(dataset_state):
+    if dataset_state is None:
+        return
+
+    mode = dataset_state.get("dataset_mode", None)
+    if mode is None:
+        return
+
+    if "use_long_sequence" in dataset_state and "is_windowed" in dataset_state:
+        use_long_sequence = dataset_state["use_long_sequence"]
+        is_windowed = dataset_state["is_windowed"]
+        if torch.any(use_long_sequence != is_windowed):
+            raise ValueError("Inconsistent dataset_state: use_long_sequence != is_windowed")
+
+
+def _summarize_dataset_state(dataset_state, ref_tensor):
+    """
+    Convert per-sample dataset state tensors into scalar diagnostics.
+
+    This records state only; it does not change the objective.
+    """
+    if dataset_state is None:
+        return {}
+
+    out = {}
+    for key, value in dataset_state.items():
+        if not torch.is_tensor(value):
+            continue
+
+        v = value.to(device=ref_tensor.device)
+        if v.numel() == 0:
+            continue
+
+        v_float = v if torch.is_floating_point(v) else v.float()
+        out[f"data_state/{key}_first"] = v.reshape(-1)[0].detach()
+        out[f"data_state/{key}_mean"] = v_float.mean().detach()
+
+        if v.numel() > 1:
+            out[f"data_state/{key}_min"] = v_float.min().detach()
+            out[f"data_state/{key}_max"] = v_float.max().detach()
+
+    return out
+
+
 def build_normalized_amp_prior(
     f,
     t0,
@@ -596,6 +640,7 @@ def compute_harmonic_loss(
     amp_scale=None,
     t0=None,
     signal_cfg=None,
+    dataset_state=None,
     global_step=None,
 ):
     """
@@ -604,6 +649,8 @@ def compute_harmonic_loss(
         model_outputs: dict with mu_f/std_f/logvar_f
         t: [B, L]
     """
+    _validate_dataset_state_for_current_loss(dataset_state)
+
     mu_f = model_outputs["mu_f"]
     std_f = model_outputs["std_f"]
 
@@ -701,6 +748,12 @@ def compute_harmonic_loss(
                 "freq_sample_std_mean",
             )
         }
+    )
+    diagnostics.update(
+        _summarize_dataset_state(
+            dataset_state=dataset_state,
+            ref_tensor=mu_f,
+        )
     )
 
     return loss, recon_loss, freq_kl_weighted, diagnostics

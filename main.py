@@ -7,7 +7,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import CONFIG
-from dataset import BTTSequenceDataset
+from batch_utils import extract_dataset_state
+from dataset import BTTSequenceDataset, GroupedBTTSequenceDataset
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from eval import evaluate_model
 from loss import compute_harmonic_loss
@@ -191,7 +192,7 @@ def _build_metrics_payload(
     return payload
 
 
-def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_upper):
+def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_upper, split="all"):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     return BTTSequenceDataset(
         num_sequences=num_sequences,
@@ -209,6 +210,49 @@ def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_u
         snr_db=signal_cfg["snr_db"],
         seed=seed,
         normalization=data_cfg.get("normalization", "per_sequence_std"),
+        include_local_time_norm=data_cfg.get("include_local_time_norm", False),
+        split=split,
+    )
+
+
+def _build_grouped_dataset(
+    dataset_cfg,
+    split,
+    seed,
+    data_cfg,
+    signal_cfg,
+    freq_lower,
+    freq_upper,
+):
+    amp_prior_cfg = signal_cfg["amp_data_prior"]
+    short_num_cycles = dataset_cfg.get("sequence_num_cycles", data_cfg["num_cycles"])
+    return GroupedBTTSequenceDataset(
+        split=split,
+        num_param_sets=dataset_cfg["num_param_sets"],
+        sequences_per_param=dataset_cfg["sequences_per_param"],
+        use_long_sequence=dataset_cfg.get("use_long_sequence", False),
+        short_num_cycles=short_num_cycles,
+        long_sequence_num_cycles=dataset_cfg.get(
+            "long_sequence_num_cycles",
+            short_num_cycles,
+        ),
+        window_hop_cycles=dataset_cfg.get("window_hop_cycles", 1),
+        chronological_split=dataset_cfg.get("chronological_split", False),
+        train_ratio=dataset_cfg.get("train_ratio", 0.8),
+        num_probes=data_cfg["num_probes"],
+        base_freq=data_cfg["base_freq"],
+        fluctuation_delta=data_cfg["fluctuation_delta"],
+        probe_angles=data_cfg["probes"],
+        freq_lower=freq_lower,
+        freq_upper=freq_upper,
+        amp_real_center=signal_cfg["amp_real_center_m"],
+        amp_imag_center=signal_cfg["amp_imag_center_m"],
+        amp_relative_half_band=amp_prior_cfg["relative_half_band"],
+        amp_min_half_band=amp_prior_cfg["min_half_band_m"],
+        snr_db=signal_cfg["snr_db"],
+        seed=seed,
+        normalization=data_cfg.get("normalization", "per_sequence_std"),
+        include_local_time_norm=data_cfg.get("include_local_time_norm", False),
     )
 
 
@@ -236,22 +280,90 @@ def main():
     print(f"Frequency centers: {freq_center}")
     print(f"Frequency half bands: {freq_half_band}")
 
-    train_set = _build_dataset(
-        num_sequences=data_cfg["num_train_sequences"],
-        seed=seed,
-        data_cfg=data_cfg,
-        signal_cfg=signal_cfg,
-        freq_lower=freq_lower,
-        freq_upper=freq_upper,
-    )
-    val_set = _build_dataset(
-        num_sequences=data_cfg["num_val_sequences"],
-        seed=seed + 100000,
-        data_cfg=data_cfg,
-        signal_cfg=signal_cfg,
-        freq_lower=freq_lower,
-        freq_upper=freq_upper,
-    )
+    train_dataset_cfg = data_cfg.get("train_dataset", None)
+    test_dataset_cfg = data_cfg.get("test_dataset", None)
+
+    if train_dataset_cfg is None:
+        train_set = _build_dataset(
+            num_sequences=data_cfg["num_train_sequences"],
+            seed=seed,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            split="train",
+        )
+        val_set = _build_dataset(
+            num_sequences=data_cfg["num_val_sequences"],
+            seed=seed + 100000,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            split="val",
+        )
+    elif train_dataset_cfg.get("chronological_split", False):
+        train_set = _build_grouped_dataset(
+            dataset_cfg=train_dataset_cfg,
+            split="train",
+            seed=seed,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+        )
+        val_set = _build_grouped_dataset(
+            dataset_cfg=train_dataset_cfg,
+            split="val",
+            seed=seed,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+        )
+    else:
+        train_set = _build_grouped_dataset(
+            dataset_cfg=train_dataset_cfg,
+            split="train",
+            seed=seed,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+        )
+        val_dataset_cfg = data_cfg.get(
+            "val_dataset",
+            {
+                **train_dataset_cfg,
+                "num_param_sets": data_cfg.get("num_val_sequences", 2000),
+                "sequences_per_param": 1,
+                "use_long_sequence": False,
+                "chronological_split": False,
+                "sequence_num_cycles": data_cfg["num_cycles"],
+            },
+        )
+        val_set = _build_grouped_dataset(
+            dataset_cfg=val_dataset_cfg,
+            split="val",
+            seed=seed + 100000,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+        )
+
+    if test_dataset_cfg is not None:
+        test_set = _build_grouped_dataset(
+            dataset_cfg=test_dataset_cfg,
+            split="test",
+            seed=seed + 200000,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+        )
+    else:
+        test_set = None
 
     train_loader = DataLoader(
         train_set,
@@ -265,10 +377,20 @@ def main():
         shuffle=False,
         drop_last=False,
     )
+    test_loader = None
+    if test_set is not None:
+        test_loader = DataLoader(
+            test_set,
+            batch_size=data_cfg["batch_size"],
+            shuffle=False,
+            drop_last=False,
+        )
+    window_num_cycles = getattr(train_set, "window_num_cycles", data_cfg["num_cycles"])
     print(
         "Datasets: "
         f"train_sequences={len(train_set)}, val_sequences={len(val_set)}, "
-        f"sequence_length={data_cfg['num_cycles'] * data_cfg['num_probes']}"
+        f"test_sequences={len(test_set) if test_set is not None else 0}, "
+        f"sequence_length={window_num_cycles * data_cfg['num_probes']}"
     )
 
     posterior_cfg = freq_cfg.get("posterior", {})
@@ -281,7 +403,11 @@ def main():
         dim_feedforward=model_cfg["dim_feedforward"],
         hidden_dim_dense=model_cfg["hidden_dim_dense"],
         num_probes=data_cfg["num_probes"],
-        use_standard_pe=model_cfg["use_standard_pe"],
+        use_standard_pe=model_cfg.get("use_standard_pe", False),
+        use_time_pe=model_cfg.get("use_time_pe", False),
+        time_feature_index=model_cfg.get("time_feature_index", -1),
+        time_pe_num_bands=model_cfg.get("time_pe_num_bands", 64),
+        time_pe_trainable_proj=model_cfg.get("time_pe_trainable_proj", True),
         device=device,
         freq_lower_hz=freq_lower,
         freq_upper_hz=freq_upper,
@@ -406,6 +532,7 @@ def main():
                 target_batch = batch["target"].to(device)
                 noise_var_norm = batch["noise_var_norm"].to(device)
                 amp_scale = batch["amp_scale"].to(device)
+                dataset_state = extract_dataset_state(batch, device)
                 t0 = t_batch[:, :1]
                 t_local = t_batch - t0
 
@@ -421,6 +548,7 @@ def main():
                     amp_scale=amp_scale,
                     t0=t0.squeeze(1),
                     signal_cfg=signal_cfg,
+                    dataset_state=dataset_state,
                     global_step=total_steps + 1,
                 )
 
@@ -488,6 +616,13 @@ def main():
                     "amp_uncertainty_to_prior_ratio_mean",
                 ):
                     train_sums[key] += float(loss_diag[key].item())
+                for key, value in loss_diag.items():
+                    if not key.startswith("data_state/"):
+                        continue
+                    if torch.is_tensor(value):
+                        value = value.item()
+                    train_sums.setdefault(key, 0.0)
+                    train_sums[key] += float(value)
 
                 _log_scalar(writer, "train_step/loss", loss.item(), total_steps)
                 _log_scalar(writer, "train_step/recon", recon.item(), total_steps)

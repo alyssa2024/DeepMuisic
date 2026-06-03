@@ -2,6 +2,7 @@ from typing import Dict
 
 import torch
 
+from batch_utils import extract_dataset_state
 from loss import (
     build_normalized_amp_prior,
     compute_sequence_posterior_recon_loss,
@@ -116,6 +117,7 @@ def evaluate_model(
     posterior_std_values = []
     ls_cond_values = []
     ls_amp_norm_values = []
+    data_state_sums = {}
 
     amp_prior_cfg = dict(loss_cfg.get("amplitude_prior", {}))
     if signal_cfg is None:
@@ -130,6 +132,7 @@ def evaluate_model(
             probe_ids = batch["probe_ids"].to(device)
             target_batch = batch["target"].to(device)
             noise_var_norm = batch["noise_var_norm"].to(device)
+            dataset_state = extract_dataset_state(batch, device)
             true_freq = batch["true_freq_hz"].to(device)
             true_amp = torch.complex(
                 batch["true_amp_real"].to(device),
@@ -314,6 +317,12 @@ def evaluate_model(
             stats["marginal_nll"] += sampled_diag["marginal_nll"].item() * n
             stats["marginal_quad"] += sampled_diag["marginal_quad"].item() * n
             stats["marginal_logdet"] += sampled_diag["marginal_logdet"].item() * n
+            for key, value in dataset_state.items():
+                if not torch.is_tensor(value) or value.numel() == 0:
+                    continue
+                v_float = value if torch.is_floating_point(value) else value.float()
+                data_state_sums.setdefault(f"data_state/{key}_mean", 0.0)
+                data_state_sums[f"data_state/{key}_mean"] += v_float.mean().item() * n
 
             freq_sqerr_sum += freq_err.pow(2).sum(dim=0).double().cpu()
             freq_abs_err_sum += freq_abs_err.sum(dim=0).double().cpu()
@@ -367,6 +376,8 @@ def evaluate_model(
     total_sequences = max(total_sequences, 1)
     for key in stats:
         stats[key] /= total_sequences
+    for key, value in data_state_sums.items():
+        stats[key] = value / total_sequences
 
     if num_harmonics is None:
         return stats
