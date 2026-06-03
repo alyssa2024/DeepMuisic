@@ -59,14 +59,14 @@ CONFIG = {
         "dim_feedforward": 256,
         "hidden_dim_dense": 256,
         "use_standard_pe": False,
-        "use_time_pe": True,
+        "use_timgtie_pe": True,
         "time_feature_index": -1,
         "time_pe_num_bands": 64,
         "time_pe_trainable_proj": True,
         "ls_ridge": 1e-5,
     },
     "loss": {
-        "beta_freq": 1.0,
+        "beta_freq": 0.1,
         "reconstruction": {
             "type": "complex_gaussian_nll",
             "include_log_const": False,
