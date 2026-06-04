@@ -281,10 +281,13 @@ def build_normalized_amp_prior(
 
     amp_prior_cfg = amp_prior_cfg or {}
     data_prior_cfg = signal_cfg.get("amp_data_prior", {})
-    if data_prior_cfg.get("type", "independent_uniform") != "independent_uniform":
+    if data_prior_cfg.get("type", "independent_uniform") not in (
+        "independent_uniform",
+        "fixed_rho",
+    ):
         raise ValueError(
-            "Stage 3A amplitude prior currently expects "
-            "signal.amp_data_prior.type='independent_uniform'"
+            "Amplitude prior expects signal.amp_data_prior.type to be "
+            "'independent_uniform' or 'fixed_rho'"
         )
 
     device = f.device

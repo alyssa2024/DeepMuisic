@@ -201,6 +201,8 @@ def _build_dataset(
     freq_upper,
     split="all",
     frequency_rho=None,
+    amp_real_rho=None,
+    amp_imag_rho=None,
 ):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     return BTTSequenceDataset(
@@ -221,6 +223,8 @@ def _build_dataset(
         normalization=data_cfg.get("normalization", "per_sequence_std"),
         include_local_time_norm=data_cfg.get("include_local_time_norm", False),
         frequency_rho=frequency_rho,
+        amp_real_rho=amp_real_rho,
+        amp_imag_rho=amp_imag_rho,
         split=split,
     )
 
@@ -234,6 +238,8 @@ def _build_grouped_dataset(
     freq_lower,
     freq_upper,
     frequency_rho=None,
+    amp_real_rho=None,
+    amp_imag_rho=None,
 ):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     short_num_cycles = dataset_cfg.get("sequence_num_cycles", data_cfg["num_cycles"])
@@ -267,6 +273,8 @@ def _build_grouped_dataset(
         include_local_time_norm=data_cfg.get("include_local_time_norm", False),
         return_global_parent=dataset_cfg.get("return_global_parent", True),
         frequency_rho=frequency_rho,
+        amp_real_rho=amp_real_rho,
+        amp_imag_rho=amp_imag_rho,
     )
 
 
@@ -292,6 +300,8 @@ def main():
         relative_half_band=freq_cfg["relative_half_band"],
     )
     frequency_rho = freq_cfg.get("rho_k", None)
+    amp_real_rho = signal_cfg.get("rho_amp_real_k", None)
+    amp_imag_rho = signal_cfg.get("rho_amp_imag_k", None)
     print(f"Frequency centers: {freq_center}")
     print(f"Frequency half bands: {freq_half_band}")
 
@@ -312,6 +322,8 @@ def main():
             freq_lower=freq_lower,
             freq_upper=freq_upper,
             frequency_rho=frequency_rho,
+            amp_real_rho=amp_real_rho,
+            amp_imag_rho=amp_imag_rho,
         )
         val_set = _build_grouped_dataset(
             dataset_cfg=train_dataset_cfg,
@@ -322,6 +334,8 @@ def main():
             freq_lower=freq_lower,
             freq_upper=freq_upper,
             frequency_rho=frequency_rho,
+            amp_real_rho=amp_real_rho,
+            amp_imag_rho=amp_imag_rho,
         )
         test_set = _build_grouped_dataset(
             dataset_cfg=train_dataset_cfg,
@@ -332,6 +346,8 @@ def main():
             freq_lower=freq_lower,
             freq_upper=freq_upper,
             frequency_rho=frequency_rho,
+            amp_real_rho=amp_real_rho,
+            amp_imag_rho=amp_imag_rho,
         )
     else:
         train_set = _build_grouped_dataset(
@@ -343,6 +359,8 @@ def main():
             freq_lower=freq_lower,
             freq_upper=freq_upper,
             frequency_rho=frequency_rho,
+            amp_real_rho=amp_real_rho,
+            amp_imag_rho=amp_imag_rho,
         )
         val_dataset_cfg = data_cfg.get(
             "val_dataset",
@@ -370,6 +388,8 @@ def main():
             freq_lower=freq_lower,
             freq_upper=freq_upper,
             frequency_rho=frequency_rho,
+            amp_real_rho=amp_real_rho,
+            amp_imag_rho=amp_imag_rho,
         )
 
     if not train_dataset_cfg.get("chronological_split", False):
@@ -383,6 +403,8 @@ def main():
                 freq_lower=freq_lower,
                 freq_upper=freq_upper,
                 frequency_rho=frequency_rho,
+                amp_real_rho=amp_real_rho,
+                amp_imag_rho=amp_imag_rho,
             )
         else:
             test_set = None

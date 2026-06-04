@@ -70,6 +70,64 @@ def _frequency_from_rho(freq_lower, freq_upper, frequency_rho, param_id=None):
     return center + rho * half_band
 
 
+def _select_rho_vector(rho_values, expected_shape, name, param_id=None):
+    if rho_values is None:
+        return None
+
+    rho = np.asarray(rho_values, dtype=np.float64)
+    if rho.ndim == 2:
+        if param_id is None:
+            raise ValueError(f"param_id is required when {name} is [P, K]")
+        rho = rho[int(param_id)]
+    if rho.shape != expected_shape:
+        raise ValueError(f"{name} shape {rho.shape} must match {expected_shape}")
+    if np.any(np.abs(rho) > 1.0):
+        raise ValueError(f"{name} values must stay within [-1, 1]")
+    return rho
+
+
+def _amplitude_from_rho(
+    amp_real_center,
+    amp_imag_center,
+    relative_half_band,
+    min_half_band,
+    amp_real_rho,
+    amp_imag_rho,
+    param_id=None,
+):
+    if amp_real_rho is None and amp_imag_rho is None:
+        return None, None
+    if amp_real_rho is None or amp_imag_rho is None:
+        raise ValueError(
+            "Both amp_real_rho and amp_imag_rho are required for fixed-rho amplitudes"
+        )
+
+    amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
+    amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
+    rho_real = _select_rho_vector(
+        amp_real_rho,
+        amp_real_center.shape,
+        "amp_real_rho",
+        param_id=param_id,
+    )
+    rho_imag = _select_rho_vector(
+        amp_imag_rho,
+        amp_imag_center.shape,
+        "amp_imag_rho",
+        param_id=param_id,
+    )
+
+    real_half = float(relative_half_band) * np.maximum(
+        np.abs(amp_real_center),
+        float(min_half_band),
+    )
+    imag_half = float(relative_half_band) * np.maximum(
+        np.abs(amp_imag_center),
+        float(min_half_band),
+    )
+    return amp_real_center + rho_real * real_half, amp_imag_center + rho_imag * imag_half
+
+
 def build_btt_point_features(
     x_observed,
     t_samples,
@@ -272,6 +330,8 @@ class BTTSequenceDataset(Dataset):
         normalization="per_sequence_std",
         include_local_time_norm=False,
         frequency_rho=None,
+        amp_real_rho=None,
+        amp_imag_rho=None,
         split="all",
     ):
         self.num_sequences = int(num_sequences)
@@ -283,6 +343,8 @@ class BTTSequenceDataset(Dataset):
         self.freq_lower = np.asarray(freq_lower, dtype=np.float64)
         self.freq_upper = np.asarray(freq_upper, dtype=np.float64)
         self.frequency_rho = frequency_rho
+        self.amp_real_rho = amp_real_rho
+        self.amp_imag_rho = amp_imag_rho
         self.amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
         self.amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
         self.amp_relative_half_band = float(amp_relative_half_band)
@@ -322,13 +384,22 @@ class BTTSequenceDataset(Dataset):
                 self.freq_upper,
                 rng,
             )
-        amp_real, amp_imag = sample_amplitude_uniform(
+        amp_real, amp_imag = _amplitude_from_rho(
             amp_real_center=self.amp_real_center,
             amp_imag_center=self.amp_imag_center,
             relative_half_band=self.amp_relative_half_band,
             min_half_band=self.amp_min_half_band,
-            rng=rng,
+            amp_real_rho=self.amp_real_rho,
+            amp_imag_rho=self.amp_imag_rho,
         )
+        if amp_real is None:
+            amp_real, amp_imag = sample_amplitude_uniform(
+                amp_real_center=self.amp_real_center,
+                amp_imag_center=self.amp_imag_center,
+                relative_half_band=self.amp_relative_half_band,
+                min_half_band=self.amp_min_half_band,
+                rng=rng,
+            )
 
         sample = generate_one_btt_sequence(
             num_cycles=self.num_cycles,
@@ -409,6 +480,8 @@ class GroupedBTTSequenceDataset(Dataset):
         return_global_parent=False,
         val_ratio=0.2,
         frequency_rho=None,
+        amp_real_rho=None,
+        amp_imag_rho=None,
     ):
         if split not in SPLIT_ID:
             raise ValueError(f"split must be one of {sorted(SPLIT_ID)}, got {split!r}")
@@ -475,6 +548,8 @@ class GroupedBTTSequenceDataset(Dataset):
         self.freq_lower = np.asarray(freq_lower, dtype=np.float64)
         self.freq_upper = np.asarray(freq_upper, dtype=np.float64)
         self.frequency_rho = frequency_rho
+        self.amp_real_rho = amp_real_rho
+        self.amp_imag_rho = amp_imag_rho
         self.amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
         self.amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
         self.amp_relative_half_band = float(amp_relative_half_band)
@@ -501,13 +576,23 @@ class GroupedBTTSequenceDataset(Dataset):
             )
             if freq_hz is None:
                 freq_hz = sample_frequency_uniform(self.freq_lower, self.freq_upper, rng)
-            amp_real, amp_imag = sample_amplitude_uniform(
+            amp_real, amp_imag = _amplitude_from_rho(
                 amp_real_center=self.amp_real_center,
                 amp_imag_center=self.amp_imag_center,
                 relative_half_band=self.amp_relative_half_band,
                 min_half_band=self.amp_min_half_band,
-                rng=rng,
+                amp_real_rho=self.amp_real_rho,
+                amp_imag_rho=self.amp_imag_rho,
+                param_id=param_id,
             )
+            if amp_real is None:
+                amp_real, amp_imag = sample_amplitude_uniform(
+                    amp_real_center=self.amp_real_center,
+                    amp_imag_center=self.amp_imag_center,
+                    relative_half_band=self.amp_relative_half_band,
+                    min_half_band=self.amp_min_half_band,
+                    rng=rng,
+                )
             self.param_freq.append(freq_hz)
             self.param_amp_real.append(amp_real)
             self.param_amp_imag.append(amp_imag)

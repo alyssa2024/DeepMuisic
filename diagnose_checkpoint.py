@@ -27,6 +27,8 @@ def _build_val_loader(
     freq_upper,
     seed,
     frequency_rho=None,
+    amp_real_rho=None,
+    amp_imag_rho=None,
 ):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     train_dataset_cfg = data_cfg.get("train_dataset", None)
@@ -92,6 +94,8 @@ def _build_val_loader(
             include_local_time_norm=data_cfg.get("include_local_time_norm", False),
             return_global_parent=val_dataset_cfg.get("return_global_parent", True),
             frequency_rho=frequency_rho,
+            amp_real_rho=amp_real_rho,
+            amp_imag_rho=amp_imag_rho,
         )
     return DataLoader(
         val_set,
@@ -177,6 +181,8 @@ def main():
         freq_upper,
         seed,
         frequency_rho=freq_cfg.get("rho_k", None),
+        amp_real_rho=signal_cfg.get("rho_amp_real_k", None),
+        amp_imag_rho=signal_cfg.get("rho_amp_imag_k", None),
     )
     metrics = evaluate_model(
         model=model,
