@@ -23,7 +23,7 @@ CONFIG = {
             "num_param_sets": 1,
             "sequences_per_param": 1,
             "use_long_sequence": True,
-            "long_sequence_num_cycles": 64,
+            "long_sequence_num_cycles": 10000,
             "window_hop_cycles": 4,
             "chronological_split": True,
             "train_ratio": 0.6,
@@ -39,7 +39,7 @@ CONFIG = {
             "chronological_split": True,
             "train_ratio": 0.6,
             "val_ratio": 0.2,
-            "long_sequence_num_cycles": 64,
+            "long_sequence_num_cycles": 10000,
             "window_hop_cycles": 4,
             "return_global_parent": True,
         },
@@ -102,7 +102,7 @@ CONFIG = {
     "loss": {
         "beta_freq": 1e-4,
         "reconstruction": {
-            "type": "complex_gaussian_marginal_nll",
+            "type": "complex_gaussian_global_nll",
             "include_log_const": True,
             "use_posterior_sampling": True,
             "sequence_posterior_samples": 2,
