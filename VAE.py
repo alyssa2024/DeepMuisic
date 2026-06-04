@@ -9,11 +9,20 @@ class PhysicalHarmonicVAE(nn.Module):
         self,
         encoder: nn.Module,
         ls_ridge: float = 1e-6,
+        use_window_position_embedding: bool = True,
     ):
         super().__init__()
         self.encoder = encoder
         self.num_harmonics = encoder.output_dim
         self.ls_ridge = float(ls_ridge)
+        self.use_window_position_embedding = bool(use_window_position_embedding)
+        feature_dim = int(getattr(encoder, "feature_dim"))
+        self.window_pos_proj = nn.Linear(1, feature_dim)
+        self.attn_mlp = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.Tanh(),
+            nn.Linear(feature_dim, 1),
+        )
 
     def build_dictionary(self, f, t):
         """
@@ -372,3 +381,58 @@ class PhysicalHarmonicVAE(nn.Module):
             outputs["log_rho2_f"] = log_rho2_f
 
         return outputs
+
+    def forward_global(self, x_windows, probe_ids_windows=None, window_start_cycle=None):
+        """
+        Infer one global frequency posterior per parent long sequence.
+
+        Args:
+            x_windows: [B, M, L, Din]
+            probe_ids_windows: [B, M, L]
+            window_start_cycle: [B, M]
+        """
+        if x_windows.ndim != 4:
+            raise ValueError(f"x_windows must be [B, M, L, Din], got {x_windows.shape}")
+
+        batch_size, num_windows, seq_len, input_dim = x_windows.shape
+        x_flat = x_windows.reshape(batch_size * num_windows, seq_len, input_dim)
+
+        probe_flat = None
+        if probe_ids_windows is not None:
+            if probe_ids_windows.shape != x_windows.shape[:3]:
+                raise ValueError(
+                    "probe_ids_windows shape must match x_windows[:3]: "
+                    f"{probe_ids_windows.shape} vs {x_windows.shape[:3]}"
+                )
+            probe_flat = probe_ids_windows.reshape(batch_size * num_windows, seq_len)
+
+        h_flat = self.encoder.encode_features(x_flat, probe_ids=probe_flat)
+        h_windows = h_flat.reshape(batch_size, num_windows, -1)
+
+        if self.use_window_position_embedding and window_start_cycle is not None:
+            if window_start_cycle.shape != (batch_size, num_windows):
+                raise ValueError(
+                    "window_start_cycle must be [B, M], got "
+                    f"{window_start_cycle.shape}"
+                )
+            pos = window_start_cycle.to(device=x_windows.device, dtype=h_windows.dtype)
+            pos = pos - pos.min(dim=1, keepdim=True).values
+            denom = pos.max(dim=1, keepdim=True).values.clamp_min(1.0)
+            pos = (pos / denom).unsqueeze(-1)
+            h_windows = h_windows + self.window_pos_proj(pos)
+
+        attn_score = self.attn_mlp(h_windows).squeeze(-1)
+        attn_weights = torch.softmax(attn_score, dim=1)
+        h_global = torch.sum(attn_weights.unsqueeze(-1) * h_windows, dim=1)
+
+        mu_f, logvar_f, std_f, log_rho2_f = self.encoder.posterior_from_global_feature(
+            h_global
+        )
+        return {
+            "mu_f": mu_f,
+            "std_f": std_f,
+            "logvar_f": logvar_f,
+            "log_rho2_f": log_rho2_f,
+            "attn_weights": attn_weights,
+            "h_windows": h_windows,
+        }

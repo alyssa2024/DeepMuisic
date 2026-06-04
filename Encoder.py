@@ -188,6 +188,7 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         )
 
         self._fc = torch.nn.Linear(hidden_dim, hidden_dim_dense)
+        self.feature_dim = int(hidden_dim_dense)
 
         self._fc_f_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
         self._fc_f_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
@@ -236,7 +237,7 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         mask = torch.eye(seq_len)
         return mask.masked_fill(mask == 1, float("-inf")).to(self._device)
 
-    def forward(self, x, probe_ids=None, Cws=None):
+    def encode_features(self, x, probe_ids=None, Cws=None):
         """
         x:        [B, L, input_dim]
                   input_dim=7 when normalized local-time feature is used.
@@ -273,10 +274,11 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         # Key step: mean pooling to produce one global latent per patch.
         pooled = x_transformer.mean(dim=1)  # [B, hidden_dim]
 
-        y = F.relu(self._fc(pooled))  # [B, hidden_dim_dense]
+        return F.relu(self._fc(pooled))  # [B, hidden_dim_dense]
 
-        raw_f_mu = self._fc_f_mu(y)
-        raw_logrho2_f = self._fc_f_logvar(y)
+    def posterior_from_global_feature(self, h_global):
+        raw_f_mu = self._fc_f_mu(h_global)
+        raw_logrho2_f = self._fc_f_logvar(h_global)
 
         mu_unit = torch.tanh(raw_f_mu)
         mu_f = self.freq_mid + self.freq_half * mu_unit
@@ -289,3 +291,7 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         logvar_f = 2.0 * torch.log(std_f + 1e-12)
 
         return mu_f, logvar_f, std_f, log_rho2
+
+    def forward(self, x, probe_ids=None, Cws=None):
+        h = self.encode_features(x, probe_ids=probe_ids, Cws=Cws)
+        return self.posterior_from_global_feature(h)

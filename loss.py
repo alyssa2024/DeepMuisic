@@ -305,8 +305,21 @@ def build_normalized_amp_prior(
             f"{center_real.shape}/{center_imag.shape} vs K={f.shape[1]}"
         )
 
-    relative_half_band = float(data_prior_cfg.get("relative_half_band", 0.2))
-    min_half_band = float(data_prior_cfg.get("min_half_band_m", 1e-5))
+    relative_half_band = float(
+        amp_prior_cfg.get(
+            "relative_half_band",
+            amp_prior_cfg.get(
+                "relative_band",
+                data_prior_cfg.get("relative_half_band", 0.2),
+            ),
+        )
+    )
+    min_half_band = float(
+        amp_prior_cfg.get(
+            "min_half_band_m",
+            data_prior_cfg.get("min_half_band_m", 1e-5),
+        )
+    )
     min_half_band_t = torch.as_tensor(min_half_band, device=device, dtype=real_dtype)
     real_half = relative_half_band * torch.maximum(center_real.abs(), min_half_band_t)
     imag_half = relative_half_band * torch.maximum(center_imag.abs(), min_half_band_t)
@@ -630,38 +643,113 @@ def uniform_support_penalty(f_samples, freq_lower, freq_upper):
     return penalty, outside_rate
 
 
-def compute_harmonic_loss(
-    x_target,
+def _static_global_amp_prior_cfg(loss_cfg):
+    elbo_cfg = loss_cfg.get("elbo", {})
+    mode = elbo_cfg.get("mode", "static_global_bayesianls")
+    amp_prior_cfg = dict(loss_cfg.get("amplitude_prior", {}))
+
+    if mode == "static_global_ls":
+        amp_prior_cfg["enabled"] = False
+    elif mode == "static_global_mapls":
+        amp_prior_cfg["enabled"] = True
+        amp_prior_cfg["mode"] = "map"
+        amp_prior_cfg["include_prior_penalty"] = True
+    elif mode == "static_global_bayesianls":
+        amp_prior_cfg["enabled"] = True
+        amp_prior_cfg["mode"] = "marginal_likelihood"
+        amp_prior_cfg["include_prior_penalty"] = False
+    else:
+        raise ValueError(
+            "loss.elbo.mode must be one of "
+            "'static_global_ls', 'static_global_mapls', 'static_global_bayesianls'; "
+            f"got {mode!r}"
+        )
+
+    return mode, amp_prior_cfg
+
+
+def compute_frequency_kl(mu_f, std_f, model, loss_cfg):
+    kl_cfg = loss_cfg.get("kl", {})
+    kl_type = kl_cfg.get("type", "trunc_normal_to_trunc_normal")
+    if kl_type == "trunc_normal_to_uniform":
+        return kl_trunc_normal_uniform(
+            mu_f=mu_f,
+            std_f=std_f,
+            freq_lower=model.encoder.freq_lower,
+            freq_upper=model.encoder.freq_upper,
+        )
+    if kl_type == "trunc_normal_to_trunc_normal":
+        prior_cfg = loss_cfg.get("prior", loss_cfg.get("loss_prior", {}))
+        prior_mean = prior_cfg.get("mean", "center")
+        if prior_mean != "center":
+            raise ValueError(f"Unsupported loss prior mean={prior_mean!r}")
+        prior_std_ratio = float(prior_cfg.get("std_ratio_to_half_band", 0.5))
+        prior_mu_f = model.encoder.freq_mid
+        prior_std_f = prior_std_ratio * model.encoder.freq_half
+        return kl_trunc_normal_trunc_normal(
+            mu_q=mu_f,
+            std_q=std_f,
+            mu_p=prior_mu_f,
+            std_p=prior_std_f,
+            lower=model.encoder.freq_lower,
+            upper=model.encoder.freq_upper,
+        )
+    raise ValueError(f"Unsupported loss.kl.type={kl_type!r}")
+
+
+def compute_static_global_objective(
+    target_windows,
+    t_windows_abs,
     model_outputs,
     model,
-    t,
     loss_cfg,
     noise_var_norm=None,
     amp_scale=None,
-    t0=None,
     signal_cfg=None,
     dataset_state=None,
     global_step=None,
 ):
     """
+    Strict static global-latent objective for parent long sequences.
+
     Args:
-        x_target: [B, L, 2]
-        model_outputs: dict with mu_f/std_f/logvar_f
-        t: [B, L]
+        target_windows: [B, M, L, 2]
+        t_windows_abs: [B, M, L]
+        model_outputs: dict with one global mu_f/std_f per parent, [B, K]
     """
     _validate_dataset_state_for_current_loss(dataset_state)
 
+    if target_windows.ndim != 4 or target_windows.shape[-1] != 2:
+        raise ValueError(
+            f"target_windows must have shape [B, M, L, 2], got {target_windows.shape}"
+        )
+    if t_windows_abs.shape != target_windows.shape[:3]:
+        raise ValueError(
+            "t_windows_abs shape must match target_windows[:3]: "
+            f"{t_windows_abs.shape} vs {target_windows.shape[:3]}"
+        )
+
+    mode, amp_prior_cfg = _static_global_amp_prior_cfg(loss_cfg)
     mu_f = model_outputs["mu_f"]
     std_f = model_outputs["std_f"]
 
-    y_complex = torch.complex(x_target[..., 0], x_target[..., 1])
+    batch_size, num_windows, seq_len, _ = target_windows.shape
+    t0 = t_windows_abs[:, 0, 0]
+    t_global = (t_windows_abs - t0.view(batch_size, 1, 1)).reshape(
+        batch_size,
+        num_windows * seq_len,
+    )
+    y_complex = torch.complex(
+        target_windows[..., 0],
+        target_windows[..., 1],
+    ).reshape(batch_size, num_windows * seq_len)
 
     rec_cfg = loss_cfg.get("reconstruction", {})
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
     include_log_const = bool(rec_cfg.get("include_log_const", False))
     recon_loss, recon_diag = compute_sequence_posterior_recon_loss(
         y_complex=y_complex,
-        t=t,
+        t=t_global,
         mu_f=mu_f,
         std_f=std_f,
         model=model,
@@ -672,38 +760,16 @@ def compute_harmonic_loss(
         amp_scale=amp_scale,
         t0=t0,
         signal_cfg=signal_cfg,
-        amp_prior_cfg=loss_cfg.get("amplitude_prior", {}),
+        amp_prior_cfg=amp_prior_cfg,
     )
 
-    kl_cfg = loss_cfg.get("kl", {})
-    kl_type = kl_cfg.get("type", "trunc_normal_to_trunc_normal")
-    if kl_type == "trunc_normal_to_uniform":
-        freq_kl_per_item = kl_trunc_normal_uniform(
-            mu_f=mu_f,
-            std_f=std_f,
-            freq_lower=model.encoder.freq_lower,
-            freq_upper=model.encoder.freq_upper,
-        )
-    elif kl_type == "trunc_normal_to_trunc_normal":
-        prior_cfg = loss_cfg.get("prior", loss_cfg.get("loss_prior", {}))
-        prior_mean = prior_cfg.get("mean", "center")
-        if prior_mean != "center":
-            raise ValueError(f"Unsupported loss prior mean={prior_mean!r}")
-        prior_std_ratio = float(prior_cfg.get("std_ratio_to_half_band", 0.5))
-        prior_mu_f = model.encoder.freq_mid
-        prior_std_f = prior_std_ratio * model.encoder.freq_half
-        freq_kl_per_item = kl_trunc_normal_trunc_normal(
-            mu_q=mu_f,
-            std_q=std_f,
-            mu_p=prior_mu_f,
-            std_p=prior_std_f,
-            lower=model.encoder.freq_lower,
-            upper=model.encoder.freq_upper,
-        )
-    else:
-        raise ValueError(f"Unsupported loss.kl.type={kl_type!r}")
+    freq_kl_per_item = compute_frequency_kl(
+        mu_f=mu_f,
+        std_f=std_f,
+        model=model,
+        loss_cfg=loss_cfg,
+    )
     freq_kl_raw = freq_kl_per_item.sum(dim=-1).mean()
-
     _, outside_rate = uniform_support_penalty(
         f_samples=recon_diag["f_samples"],
         freq_lower=model.encoder.freq_lower,
@@ -729,12 +795,19 @@ def compute_harmonic_loss(
         "freq_prior_reg": freq_kl_weighted.detach(),
         "posterior_std_hz_mean": std_f.mean().detach(),
         "freq_sample_outside_rate": outside_rate.detach(),
+        "static_global_mode": mode,
     }
 
     if "log_rho2_f" in model_outputs:
         diagnostics["log_rho2_f_mean"] = model_outputs["log_rho2_f"].mean().detach()
         diagnostics["log_rho2_f_min"] = model_outputs["log_rho2_f"].min().detach()
         diagnostics["log_rho2_f_max"] = model_outputs["log_rho2_f"].max().detach()
+    if "attn_weights" in model_outputs:
+        attn = model_outputs["attn_weights"]
+        diagnostics["attn_max_mean"] = attn.max(dim=1).values.mean().detach()
+        diagnostics["attn_entropy_mean"] = (
+            -(attn * torch.log(attn.clamp_min(1e-12))).sum(dim=1).mean()
+        ).detach()
 
     diagnostics.update(
         {

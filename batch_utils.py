@@ -15,6 +15,7 @@ DATASET_STATE_KEYS = [
     "short_num_cycles",
     "long_sequence_num_cycles",
     "train_ratio_x10000",
+    "val_ratio_x10000",
     "is_windowed",
     "is_iid_sequence",
 ]

@@ -11,7 +11,7 @@ from batch_utils import extract_dataset_state
 from dataset import BTTSequenceDataset, GroupedBTTSequenceDataset
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from eval import evaluate_model
-from loss import compute_harmonic_loss
+from loss import compute_static_global_objective
 from synthesis_dataset import compute_frequency_support
 from VAE import PhysicalHarmonicVAE
 
@@ -192,7 +192,16 @@ def _build_metrics_payload(
     return payload
 
 
-def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_upper, split="all"):
+def _build_dataset(
+    num_sequences,
+    seed,
+    data_cfg,
+    signal_cfg,
+    freq_lower,
+    freq_upper,
+    split="all",
+    frequency_rho=None,
+):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     return BTTSequenceDataset(
         num_sequences=num_sequences,
@@ -211,6 +220,7 @@ def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_u
         seed=seed,
         normalization=data_cfg.get("normalization", "per_sequence_std"),
         include_local_time_norm=data_cfg.get("include_local_time_norm", False),
+        frequency_rho=frequency_rho,
         split=split,
     )
 
@@ -223,6 +233,7 @@ def _build_grouped_dataset(
     signal_cfg,
     freq_lower,
     freq_upper,
+    frequency_rho=None,
 ):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     short_num_cycles = dataset_cfg.get("sequence_num_cycles", data_cfg["num_cycles"])
@@ -238,7 +249,8 @@ def _build_grouped_dataset(
         ),
         window_hop_cycles=dataset_cfg.get("window_hop_cycles", 1),
         chronological_split=dataset_cfg.get("chronological_split", False),
-        train_ratio=dataset_cfg.get("train_ratio", 0.8),
+        train_ratio=dataset_cfg.get("train_ratio", 0.6),
+        val_ratio=dataset_cfg.get("val_ratio", 0.2),
         num_probes=data_cfg["num_probes"],
         base_freq=data_cfg["base_freq"],
         fluctuation_delta=data_cfg["fluctuation_delta"],
@@ -253,6 +265,8 @@ def _build_grouped_dataset(
         seed=seed,
         normalization=data_cfg.get("normalization", "per_sequence_std"),
         include_local_time_norm=data_cfg.get("include_local_time_norm", False),
+        return_global_parent=dataset_cfg.get("return_global_parent", True),
+        frequency_rho=frequency_rho,
     )
 
 
@@ -277,32 +291,18 @@ def main():
         freq_center_hz=freq_cfg["center_hz"],
         relative_half_band=freq_cfg["relative_half_band"],
     )
+    frequency_rho = freq_cfg.get("rho_k", None)
     print(f"Frequency centers: {freq_center}")
     print(f"Frequency half bands: {freq_half_band}")
 
     train_dataset_cfg = data_cfg.get("train_dataset", None)
     test_dataset_cfg = data_cfg.get("test_dataset", None)
-
     if train_dataset_cfg is None:
-        train_set = _build_dataset(
-            num_sequences=data_cfg["num_train_sequences"],
-            seed=seed,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            split="train",
-        )
-        val_set = _build_dataset(
-            num_sequences=data_cfg["num_val_sequences"],
-            seed=seed + 100000,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            split="val",
-        )
-    elif train_dataset_cfg.get("chronological_split", False):
+        raise ValueError("Stage 1 requires data.train_dataset with return_global_parent=True")
+    if not bool(train_dataset_cfg.get("return_global_parent", True)):
+        raise ValueError("Stage 1 requires data.train_dataset.return_global_parent=True")
+
+    if train_dataset_cfg.get("chronological_split", False):
         train_set = _build_grouped_dataset(
             dataset_cfg=train_dataset_cfg,
             split="train",
@@ -311,6 +311,7 @@ def main():
             signal_cfg=signal_cfg,
             freq_lower=freq_lower,
             freq_upper=freq_upper,
+            frequency_rho=frequency_rho,
         )
         val_set = _build_grouped_dataset(
             dataset_cfg=train_dataset_cfg,
@@ -320,6 +321,17 @@ def main():
             signal_cfg=signal_cfg,
             freq_lower=freq_lower,
             freq_upper=freq_upper,
+            frequency_rho=frequency_rho,
+        )
+        test_set = _build_grouped_dataset(
+            dataset_cfg=train_dataset_cfg,
+            split="test",
+            seed=seed,
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            frequency_rho=frequency_rho,
         )
     else:
         train_set = _build_grouped_dataset(
@@ -330,6 +342,7 @@ def main():
             signal_cfg=signal_cfg,
             freq_lower=freq_lower,
             freq_upper=freq_upper,
+            frequency_rho=frequency_rho,
         )
         val_dataset_cfg = data_cfg.get(
             "val_dataset",
@@ -337,9 +350,15 @@ def main():
                 **train_dataset_cfg,
                 "num_param_sets": data_cfg.get("num_val_sequences", 2000),
                 "sequences_per_param": 1,
-                "use_long_sequence": False,
+                "use_long_sequence": True,
                 "chronological_split": False,
                 "sequence_num_cycles": data_cfg["num_cycles"],
+                "long_sequence_num_cycles": train_dataset_cfg.get(
+                    "long_sequence_num_cycles",
+                    data_cfg["num_cycles"],
+                ),
+                "window_hop_cycles": train_dataset_cfg.get("window_hop_cycles", data_cfg["num_cycles"]),
+                "return_global_parent": True,
             },
         )
         val_set = _build_grouped_dataset(
@@ -350,26 +369,29 @@ def main():
             signal_cfg=signal_cfg,
             freq_lower=freq_lower,
             freq_upper=freq_upper,
+            frequency_rho=frequency_rho,
         )
 
-    if test_dataset_cfg is not None:
-        test_set = _build_grouped_dataset(
-            dataset_cfg=test_dataset_cfg,
-            split="test",
-            seed=seed + 200000,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-        )
-    else:
-        test_set = None
+    if not train_dataset_cfg.get("chronological_split", False):
+        if test_dataset_cfg is not None:
+            test_set = _build_grouped_dataset(
+                dataset_cfg=test_dataset_cfg,
+                split="test",
+                seed=seed + 200000,
+                data_cfg=data_cfg,
+                signal_cfg=signal_cfg,
+                freq_lower=freq_lower,
+                freq_upper=freq_upper,
+                frequency_rho=frequency_rho,
+            )
+        else:
+            test_set = None
 
     train_loader = DataLoader(
         train_set,
         batch_size=data_cfg["batch_size"],
         shuffle=True,
-        drop_last=True,
+        drop_last=False,
     )
     val_loader = DataLoader(
         val_set,
@@ -417,6 +439,10 @@ def main():
     model = PhysicalHarmonicVAE(
         encoder=encoder,
         ls_ridge=model_cfg.get("ls_ridge", 1e-6),
+        use_window_position_embedding=model_cfg.get(
+            "global_aggregation",
+            {},
+        ).get("use_window_position_embedding", True),
     ).to(device)
     base_lr = float(train_cfg["lr"])
     optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
@@ -451,6 +477,7 @@ def main():
     final_metrics = None
     best_metrics = None
     best_epoch = None
+    best_ckpt_path = None
 
     ckpt_cfg = CONFIG.get("checkpoint", {})
     ckpt_dir = ckpt_cfg.get("dir", "checkpoints")
@@ -526,27 +553,29 @@ def main():
             train_batches = 0
 
             for batch in train_loader:
-                x_batch = batch["x"].to(device)
-                t_batch = batch["t"].to(device)
-                probe_ids = batch["probe_ids"].to(device)
-                target_batch = batch["target"].to(device)
+                x_batch = batch["x_windows"].to(device)
+                t_batch = batch["t_windows"].to(device)
+                probe_ids = batch["probe_ids_windows"].to(device)
+                target_batch = batch["target_windows"].to(device)
+                window_start_cycle = batch["window_start_cycle"].to(device)
                 noise_var_norm = batch["noise_var_norm"].to(device)
                 amp_scale = batch["amp_scale"].to(device)
                 dataset_state = extract_dataset_state(batch, device)
-                t0 = t_batch[:, :1]
-                t_local = t_batch - t0
 
                 optimizer.zero_grad()
-                model_outputs = model(x_batch, t_local, probe_ids=probe_ids)
-                loss, recon, freq_kl, loss_diag = compute_harmonic_loss(
-                    x_target=target_batch,
+                model_outputs = model.forward_global(
+                    x_batch,
+                    probe_ids_windows=probe_ids,
+                    window_start_cycle=window_start_cycle,
+                )
+                loss, recon, freq_kl, loss_diag = compute_static_global_objective(
+                    target_windows=target_batch,
+                    t_windows_abs=t_batch,
                     model_outputs=model_outputs,
                     model=model,
-                    t=t_local,
                     loss_cfg=loss_cfg,
                     noise_var_norm=noise_var_norm,
                     amp_scale=amp_scale,
-                    t0=t0.squeeze(1),
                     signal_cfg=signal_cfg,
                     dataset_state=dataset_state,
                     global_step=total_steps + 1,
@@ -742,6 +771,7 @@ def main():
                         ckpt_dir,
                         f"best_{str(early_monitor).replace('/', '_')}.pt",
                     )
+                    best_ckpt_path = best_ckpt
                     save_checkpoint(
                         path=best_ckpt,
                         model=model,
@@ -842,6 +872,54 @@ def main():
                     epoch_to_target=epoch_to_target,
                 )
                 print(f"Saved checkpoint: {latest_ckpt}")
+
+        if bool(eval_cfg.get("evaluate_test_dataset", False)) and test_loader is not None:
+            eval_checkpoint = "final"
+            test_checkpoint = eval_cfg.get("test_checkpoint", "best")
+            if (
+                test_checkpoint == "best"
+                and best_ckpt_path is not None
+                and os.path.exists(best_ckpt_path)
+            ):
+                checkpoint = torch.load(best_ckpt_path, map_location=device)
+                model.load_state_dict(checkpoint["model_state_dict"])
+                eval_checkpoint = "best"
+
+            test_metrics = evaluate_model(
+                model=model,
+                dataloader=test_loader,
+                device=device,
+                loss_cfg=loss_cfg,
+                signal_cfg=signal_cfg,
+                dense_factor=dense_factor,
+            )
+            test_metrics["epoch"] = epoch + 1
+            test_metrics["total_steps"] = total_steps
+            test_metrics["seed"] = seed
+            test_metrics["test_sequences"] = len(test_set)
+            test_metrics["eval_checkpoint"] = eval_checkpoint
+
+            for key, value in test_metrics.items():
+                if isinstance(value, (int, float)):
+                    _log_scalar(writer, f"test/{key}", value, total_steps)
+
+            test_metrics_path = os.path.join(
+                run_dir,
+                eval_cfg.get("test_metrics_name", "test_metrics.json"),
+            )
+            with open(test_metrics_path, "w", encoding="utf-8") as f:
+                json.dump(test_metrics, f, indent=2)
+            print(
+                "[TEST] "
+                f"checkpoint={eval_checkpoint} "
+                f"loss={test_metrics['loss']:.6f} "
+                f"recon_mse_mean={test_metrics['recon_mse_mean']:.6f} "
+                f"freq_rmse_hz_mean={test_metrics['freq_rmse_hz_mean']:.4f} "
+                f"freq_success={test_metrics['freq_success_rate_mean']:.4f} "
+                f"amp_mape={test_metrics['amp_mape_mean']:.4f} "
+                f"test_sequences={len(test_set)}"
+            )
+            print(f"Saved test metrics: {test_metrics_path}")
     finally:
         if final_metrics is not None:
             metrics_path = os.path.join(run_dir, "metrics.json")

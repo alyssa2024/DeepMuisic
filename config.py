@@ -6,6 +6,10 @@ Edit values here, then run `main.py`.
 
 CONFIG = {
     "seed": 42,
+    "frequency_model": {
+        "type": "static_global",
+        "interpretation": "first_order_approximation",
+    },
     "data": {
         "input_dim": 7,
         "include_local_time_norm": True,
@@ -16,23 +20,28 @@ CONFIG = {
         "probes": [0, 28, 111.08, 166.15],
         "num_cycles": 4,
         "train_dataset": {
-            "num_param_sets": 10000,
+            "num_param_sets": 1,
             "sequences_per_param": 1,
-            "use_long_sequence": False,
-            "long_sequence_num_cycles": 4,
-            "window_hop_cycles": 1,
-            "chronological_split": False,
-            "train_ratio": 0.8,
+            "use_long_sequence": True,
+            "long_sequence_num_cycles": 64,
+            "window_hop_cycles": 4,
+            "chronological_split": True,
+            "train_ratio": 0.6,
+            "val_ratio": 0.2,
             "sequence_num_cycles": 4,
+            "return_global_parent": True,
         },
         "test_dataset": {
-            "num_param_sets": 2000,
+            "num_param_sets": 1,
             "sequences_per_param": 1,
-            "use_long_sequence": False,
+            "use_long_sequence": True,
             "sequence_num_cycles": 4,
-            "chronological_split": False,
-            "long_sequence_num_cycles": 4,
-            "window_hop_cycles": 1,
+            "chronological_split": True,
+            "train_ratio": 0.6,
+            "val_ratio": 0.2,
+            "long_sequence_num_cycles": 64,
+            "window_hop_cycles": 4,
+            "return_global_parent": True,
         },
         "num_train_sequences": 10000,
         "num_val_sequences": 2000,
@@ -53,8 +62,9 @@ CONFIG = {
     "frequency": {
         "center_hz": [167.0, 341.0, 635.0, 872.0],
         "relative_half_band": 0.05,
+        "rho_k": [0.0, 0.0, 0.0, 0.0],
         "data_prior": {
-            "type": "uniform",
+            "type": "fixed_rho",
         },
         "model_search": {
             "type": "relative_band",
@@ -82,20 +92,25 @@ CONFIG = {
         "time_feature_index": -1,
         "time_pe_num_bands": 64,
         "time_pe_trainable_proj": True,
+        "global_aggregation": {
+            "enabled": True,
+            "type": "attention_pooling",
+            "use_window_position_embedding": True,
+        },
         "ls_ridge": 1e-5,
     },
     "loss": {
-        "beta_freq": 0.1,
+        "beta_freq": 1e-4,
         "reconstruction": {
             "type": "complex_gaussian_marginal_nll",
-            "include_log_const": False,
+            "include_log_const": True,
             "use_posterior_sampling": True,
             "sequence_posterior_samples": 2,
             "sample_at_train": True,
             "eval_at_mean": True,
         },
         "amplitude_prior": {
-            "enabled": True,
+            "enabled": False,
             "type": "centered_complex_gaussian_from_data_uniform",
             "mode": "marginal_likelihood",
             "local_time_align": True,
@@ -109,9 +124,10 @@ CONFIG = {
             "reuse_reconstruction_samples": False,
         },
         "elbo": {
-            "mode": "pseudo_iid_window",
+            "mode": "static_global_ls",
             "state_aware": True,
-            "strict_long_sequence_elbo": False,
+            "strict_long_sequence_elbo": True,
+            "global_time_origin": "parent",
         },
         "success": {
             "freq_relative_tol": 0.02,

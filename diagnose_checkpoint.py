@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import CONFIG
-from dataset import BTTSequenceDataset, GroupedBTTSequenceDataset
+from dataset import GroupedBTTSequenceDataset
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from eval import evaluate_model
 from synthesis_dataset import compute_frequency_support
@@ -20,29 +20,18 @@ def set_global_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def _build_val_loader(data_cfg, signal_cfg, freq_lower, freq_upper, seed):
+def _build_val_loader(
+    data_cfg,
+    signal_cfg,
+    freq_lower,
+    freq_upper,
+    seed,
+    frequency_rho=None,
+):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     train_dataset_cfg = data_cfg.get("train_dataset", None)
     if train_dataset_cfg is None:
-        val_set = BTTSequenceDataset(
-            num_sequences=data_cfg["num_val_sequences"],
-            num_cycles=data_cfg["num_cycles"],
-            num_probes=data_cfg["num_probes"],
-            base_freq=data_cfg["base_freq"],
-            fluctuation_delta=data_cfg["fluctuation_delta"],
-            probe_angles=data_cfg["probes"],
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            amp_real_center=signal_cfg["amp_real_center_m"],
-            amp_imag_center=signal_cfg["amp_imag_center_m"],
-            amp_relative_half_band=amp_prior_cfg["relative_half_band"],
-            amp_min_half_band=amp_prior_cfg["min_half_band_m"],
-            snr_db=signal_cfg["snr_db"],
-            seed=seed + 100000,
-            normalization=data_cfg.get("normalization", "per_sequence_std"),
-            include_local_time_norm=data_cfg.get("include_local_time_norm", False),
-            split="val",
-        )
+        raise ValueError("Stage 1 diagnostics require data.train_dataset")
     else:
         if train_dataset_cfg.get("chronological_split", False):
             val_dataset_cfg = train_dataset_cfg
@@ -55,9 +44,18 @@ def _build_val_loader(data_cfg, signal_cfg, freq_lower, freq_upper, seed):
                     **train_dataset_cfg,
                     "num_param_sets": data_cfg.get("num_val_sequences", 2000),
                     "sequences_per_param": 1,
-                    "use_long_sequence": False,
+                    "use_long_sequence": True,
                     "chronological_split": False,
                     "sequence_num_cycles": data_cfg["num_cycles"],
+                    "long_sequence_num_cycles": train_dataset_cfg.get(
+                        "long_sequence_num_cycles",
+                        data_cfg["num_cycles"],
+                    ),
+                    "window_hop_cycles": train_dataset_cfg.get(
+                        "window_hop_cycles",
+                        data_cfg["num_cycles"],
+                    ),
+                    "return_global_parent": True,
                 },
             )
             split = "val"
@@ -76,7 +74,8 @@ def _build_val_loader(data_cfg, signal_cfg, freq_lower, freq_upper, seed):
             ),
             window_hop_cycles=val_dataset_cfg.get("window_hop_cycles", 1),
             chronological_split=val_dataset_cfg.get("chronological_split", False),
-            train_ratio=val_dataset_cfg.get("train_ratio", 0.8),
+            train_ratio=val_dataset_cfg.get("train_ratio", 0.6),
+            val_ratio=val_dataset_cfg.get("val_ratio", 0.2),
             num_probes=data_cfg["num_probes"],
             base_freq=data_cfg["base_freq"],
             fluctuation_delta=data_cfg["fluctuation_delta"],
@@ -91,6 +90,8 @@ def _build_val_loader(data_cfg, signal_cfg, freq_lower, freq_upper, seed):
             seed=val_seed,
             normalization=data_cfg.get("normalization", "per_sequence_std"),
             include_local_time_norm=data_cfg.get("include_local_time_norm", False),
+            return_global_parent=val_dataset_cfg.get("return_global_parent", True),
+            frequency_rho=frequency_rho,
         )
     return DataLoader(
         val_set,
@@ -159,13 +160,24 @@ def main():
     model = PhysicalHarmonicVAE(
         encoder=encoder,
         ls_ridge=model_cfg.get("ls_ridge", 1e-6),
+        use_window_position_embedding=model_cfg.get(
+            "global_aggregation",
+            {},
+        ).get("use_window_position_embedding", True),
     ).to(device)
 
     checkpoint = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    val_loader = _build_val_loader(data_cfg, signal_cfg, freq_lower, freq_upper, seed)
+    val_loader = _build_val_loader(
+        data_cfg,
+        signal_cfg,
+        freq_lower,
+        freq_upper,
+        seed,
+        frequency_rho=freq_cfg.get("rho_k", None),
+    )
     metrics = evaluate_model(
         model=model,
         dataloader=val_loader,
@@ -179,11 +191,14 @@ def main():
     std_f_list = []
     with torch.no_grad():
         for batch in val_loader:
-            x_batch = batch["x"].to(device)
-            t_batch = batch["t"].to(device)
-            probe_ids = batch["probe_ids"].to(device)
-            t_local = t_batch - t_batch[:, :1]
-            outputs = model(x_batch, t_local, probe_ids=probe_ids)
+            x_batch = batch["x_windows"].to(device)
+            probe_ids = batch["probe_ids_windows"].to(device)
+            window_start_cycle = batch["window_start_cycle"].to(device)
+            outputs = model.forward_global(
+                x_batch,
+                probe_ids_windows=probe_ids,
+                window_start_cycle=window_start_cycle,
+            )
             mu_f_list.append(outputs["mu_f"])
             std_f_list.append(outputs["std_f"])
 

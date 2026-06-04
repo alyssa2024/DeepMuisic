@@ -13,6 +13,7 @@ DATASET_MODE = {
     "grouped_short_sequences": 1,
     "grouped_long_windows": 2,
     "fixed_param_long_sequence": 3,
+    "static_global_parent": 4,
 }
 
 SPLIT_ID = {
@@ -31,6 +32,42 @@ def _infer_dataset_mode(num_param_sets, sequences_per_param, use_long_sequence):
     if int(num_param_sets) > 1 or int(sequences_per_param) > 1:
         return DATASET_MODE["grouped_short_sequences"]
     return DATASET_MODE["iid_sequences"]
+
+
+def _compute_normalization(x_observed, noise_power, normalization):
+    if normalization == "per_sequence_std":
+        amp_scale = float(np.std(x_observed))
+        x_observed_norm = x_observed / (amp_scale + 1e-12)
+    elif normalization in (None, "none"):
+        amp_scale = 1.0
+        x_observed_norm = x_observed
+    else:
+        raise ValueError(f"Unsupported normalization={normalization}")
+    noise_var_norm = float(noise_power) / ((amp_scale + 1e-12) ** 2)
+    return x_observed_norm, amp_scale, noise_var_norm
+
+
+def _frequency_from_rho(freq_lower, freq_upper, frequency_rho, param_id=None):
+    if frequency_rho is None:
+        return None
+
+    freq_lower = np.asarray(freq_lower, dtype=np.float64)
+    freq_upper = np.asarray(freq_upper, dtype=np.float64)
+    rho = np.asarray(frequency_rho, dtype=np.float64)
+    if rho.ndim == 2:
+        if param_id is None:
+            raise ValueError("param_id is required when frequency_rho is [P, K]")
+        rho = rho[int(param_id)]
+    if rho.shape != freq_lower.shape:
+        raise ValueError(
+            f"frequency_rho shape {rho.shape} must match frequency shape {freq_lower.shape}"
+        )
+    if np.any(np.abs(rho) > 1.0):
+        raise ValueError("frequency_rho values must stay within [-1, 1]")
+
+    center = 0.5 * (freq_lower + freq_upper)
+    half_band = 0.5 * (freq_upper - freq_lower)
+    return center + rho * half_band
 
 
 def build_btt_point_features(
@@ -121,15 +158,11 @@ def _build_sample_item(
     Build one model-ready sample from a full parent sequence or a sliced window.
     """
 
-    if normalization == "per_sequence_std":
-        amp_scale = float(np.std(x_observed))
-        x_observed_norm = x_observed / (amp_scale + 1e-12)
-    elif normalization in (None, "none"):
-        amp_scale = 1.0
-        x_observed_norm = x_observed
-    else:
-        raise ValueError(f"Unsupported normalization={normalization}")
-    noise_var_norm = float(noise_power) / ((amp_scale + 1e-12) ** 2)
+    x_observed_norm, amp_scale, noise_var_norm = _compute_normalization(
+        x_observed=x_observed,
+        noise_power=noise_power,
+        normalization=normalization,
+    )
 
     local_rev_ids = rev_ids - int(rev_ids[0])
     features, t_samples, local_rev_ids, probe_ids = build_btt_point_features(
@@ -238,6 +271,7 @@ class BTTSequenceDataset(Dataset):
         seed=0,
         normalization="per_sequence_std",
         include_local_time_norm=False,
+        frequency_rho=None,
         split="all",
     ):
         self.num_sequences = int(num_sequences)
@@ -248,6 +282,7 @@ class BTTSequenceDataset(Dataset):
         self.probe_angles = probe_angles
         self.freq_lower = np.asarray(freq_lower, dtype=np.float64)
         self.freq_upper = np.asarray(freq_upper, dtype=np.float64)
+        self.frequency_rho = frequency_rho
         self.amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
         self.amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
         self.amp_relative_half_band = float(amp_relative_half_band)
@@ -276,11 +311,17 @@ class BTTSequenceDataset(Dataset):
     def __getitem__(self, idx):
         rng = np.random.default_rng(self.seed + int(idx))
 
-        freq_hz = sample_frequency_uniform(
+        freq_hz = _frequency_from_rho(
             self.freq_lower,
             self.freq_upper,
-            rng,
+            self.frequency_rho,
         )
+        if freq_hz is None:
+            freq_hz = sample_frequency_uniform(
+                self.freq_lower,
+                self.freq_upper,
+                rng,
+            )
         amp_real, amp_imag = sample_amplitude_uniform(
             amp_real_center=self.amp_real_center,
             amp_imag_center=self.amp_imag_center,
@@ -365,6 +406,9 @@ class GroupedBTTSequenceDataset(Dataset):
         seed=0,
         normalization="per_sequence_std",
         include_local_time_norm=False,
+        return_global_parent=False,
+        val_ratio=0.2,
+        frequency_rho=None,
     ):
         if split not in SPLIT_ID:
             raise ValueError(f"split must be one of {sorted(SPLIT_ID)}, got {split!r}")
@@ -378,6 +422,7 @@ class GroupedBTTSequenceDataset(Dataset):
         self.window_hop_cycles = int(window_hop_cycles)
         self.chronological_split = bool(chronological_split)
         self.train_ratio = float(train_ratio)
+        self.val_ratio = float(val_ratio)
         self.num_probes = int(num_probes)
         self.base_freq = float(base_freq)
         self.fluctuation_delta = float(fluctuation_delta)
@@ -386,12 +431,17 @@ class GroupedBTTSequenceDataset(Dataset):
         self.seed = int(seed)
         self.normalization = normalization
         self.include_local_time_norm = bool(include_local_time_norm)
+        self.return_global_parent = bool(return_global_parent)
         self.window_num_cycles = self.short_num_cycles
         self.dataset_mode = _infer_dataset_mode(
             num_param_sets=self.num_param_sets,
             sequences_per_param=self.sequences_per_param,
             use_long_sequence=self.use_long_sequence,
         )
+        if self.return_global_parent:
+            if not self.use_long_sequence:
+                raise ValueError("return_global_parent=True requires use_long_sequence=True")
+            self.dataset_mode = DATASET_MODE["static_global_parent"]
 
         if self.num_param_sets <= 0:
             raise ValueError("num_param_sets must be positive")
@@ -403,6 +453,12 @@ class GroupedBTTSequenceDataset(Dataset):
             raise ValueError("window_hop_cycles must be positive")
         if not (0.0 < self.train_ratio < 1.0):
             raise ValueError("train_ratio must be in (0, 1)")
+        if not (0.0 <= self.val_ratio < 1.0):
+            raise ValueError("val_ratio must be in [0, 1)")
+        if self.chronological_split and self.train_ratio + self.val_ratio >= 1.0:
+            raise ValueError(
+                "chronological split requires train_ratio + val_ratio < 1"
+            )
 
         if self.use_long_sequence:
             if self.long_sequence_num_cycles < self.short_num_cycles:
@@ -411,13 +467,14 @@ class GroupedBTTSequenceDataset(Dataset):
         else:
             self.parent_num_cycles = self.short_num_cycles
 
-        if self.chronological_split and split not in ("train", "val"):
+        if self.chronological_split and split not in ("train", "val", "test"):
             raise ValueError(
-                "Use split='train' or split='val' when chronological_split=True"
+                "Use split='train', split='val', or split='test' when chronological_split=True"
             )
 
         self.freq_lower = np.asarray(freq_lower, dtype=np.float64)
         self.freq_upper = np.asarray(freq_upper, dtype=np.float64)
+        self.frequency_rho = frequency_rho
         self.amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
         self.amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
         self.amp_relative_half_band = float(amp_relative_half_band)
@@ -435,7 +492,15 @@ class GroupedBTTSequenceDataset(Dataset):
         self.param_amp_real = []
         self.param_amp_imag = []
         for _ in range(self.num_param_sets):
-            freq_hz = sample_frequency_uniform(self.freq_lower, self.freq_upper, rng)
+            param_id = len(self.param_freq)
+            freq_hz = _frequency_from_rho(
+                self.freq_lower,
+                self.freq_upper,
+                self.frequency_rho,
+                param_id=param_id,
+            )
+            if freq_hz is None:
+                freq_hz = sample_frequency_uniform(self.freq_lower, self.freq_upper, rng)
             amp_real, amp_imag = sample_amplitude_uniform(
                 amp_real_center=self.amp_real_center,
                 amp_imag_center=self.amp_imag_center,
@@ -452,17 +517,29 @@ class GroupedBTTSequenceDataset(Dataset):
 
         self.parent_specs = []
         self.index = []
+        self.parent_window_starts = {}
         self.parent_cache = {}
         for param_id in range(self.num_param_sets):
             for seq_id in range(self.sequences_per_param):
                 parent_id = len(self.parent_specs)
                 self.parent_specs.append((param_id, seq_id))
                 if self.use_long_sequence:
-                    for start_cycle in self._make_window_start_cycles(
-                        total_cycles=self.long_sequence_num_cycles
-                    ):
-                        self.index.append((parent_id, int(start_cycle)))
+                    start_cycles = [
+                        int(start_cycle)
+                        for start_cycle in self._make_window_start_cycles(
+                            total_cycles=self.long_sequence_num_cycles
+                        )
+                    ]
+                    self.parent_window_starts[parent_id] = start_cycles
+                    if self.return_global_parent:
+                        if start_cycles:
+                            self.index.append((parent_id, None))
+                    else:
+                        for start_cycle in start_cycles:
+                            self.index.append((parent_id, int(start_cycle)))
                 else:
+                    if self.return_global_parent:
+                        raise RuntimeError("Invalid dataset state: parent mode without long sequence")
                     self.index.append((parent_id, 0))
 
         if len(self.index) == 0:
@@ -479,13 +556,19 @@ class GroupedBTTSequenceDataset(Dataset):
         if not self.chronological_split:
             return all_start_cycles
 
-        split_cycle = int(np.floor(self.train_ratio * total_cycles))
+        train_end_cycle = int(np.floor(self.train_ratio * total_cycles))
+        val_end_cycle = int(np.floor((self.train_ratio + self.val_ratio) * total_cycles))
         if self.split == "train":
             return all_start_cycles[
-                all_start_cycles + self.short_num_cycles <= split_cycle
+                all_start_cycles + self.short_num_cycles <= train_end_cycle
             ]
         if self.split == "val":
-            return all_start_cycles[all_start_cycles >= split_cycle]
+            return all_start_cycles[
+                (all_start_cycles >= train_end_cycle)
+                & (all_start_cycles + self.short_num_cycles <= val_end_cycle)
+            ]
+        if self.split == "test":
+            return all_start_cycles[all_start_cycles >= val_end_cycle]
         raise RuntimeError("Invalid split state")
 
     def __len__(self):
@@ -515,8 +598,105 @@ class GroupedBTTSequenceDataset(Dataset):
             self.parent_cache[parent_id] = sample
         return sample
 
+    def _build_static_global_parent_item(self, parent_id):
+        param_id, seq_id = self.parent_specs[int(parent_id)]
+        sample = self._generate_parent(parent_id)
+        start_cycles = self.parent_window_starts.get(int(parent_id), [])
+        if not start_cycles:
+            raise ValueError(f"Parent {parent_id} has no windows for split={self.split}")
+
+        point_indices = []
+        for start_cycle in start_cycles:
+            start = int(start_cycle) * self.num_probes
+            end = (int(start_cycle) + self.short_num_cycles) * self.num_probes
+            point_indices.append(np.arange(start, end, dtype=np.int64))
+        stacked_indices = np.concatenate(point_indices, axis=0)
+
+        x_norm_all, amp_scale, noise_var_norm = _compute_normalization(
+            x_observed=sample["x_observed"][stacked_indices],
+            noise_power=sample["noise_power"],
+            normalization=self.normalization,
+        )
+
+        x_windows = []
+        t_windows = []
+        target_windows = []
+        probe_windows = []
+        rev_windows = []
+        for local_indices in point_indices:
+            x_observed_norm = x_norm_all[
+                len(x_windows) * self.short_num_cycles * self.num_probes : (
+                    len(x_windows) + 1
+                )
+                * self.short_num_cycles
+                * self.num_probes
+            ]
+            rev_ids = sample["rev_ids"][local_indices]
+            local_rev_ids = rev_ids - int(rev_ids[0])
+            features, t_samples, local_rev_ids, probe_ids = build_btt_point_features(
+                x_observed=x_observed_norm,
+                t_samples=sample["t_samples"][local_indices],
+                rev_ids=local_rev_ids,
+                probe_ids=sample["probe_ids"][local_indices],
+                theta_samples=sample["theta_samples"][local_indices],
+                freqs_at_samples=sample["freqs_at_samples"][local_indices],
+                base_freq=self.base_freq,
+                n_revs=self.short_num_cycles,
+                include_local_time_norm=self.include_local_time_norm,
+            )
+            x_windows.append(torch.as_tensor(features, dtype=torch.float32))
+            t_windows.append(torch.as_tensor(t_samples, dtype=torch.float32))
+            target_windows.append(torch.as_tensor(features[:, :2], dtype=torch.float32))
+            probe_windows.append(torch.as_tensor(probe_ids, dtype=torch.long))
+            rev_windows.append(torch.as_tensor(local_rev_ids, dtype=torch.long))
+
+        item = {
+            "x_windows": torch.stack(x_windows, dim=0),
+            "t_windows": torch.stack(t_windows, dim=0),
+            "target_windows": torch.stack(target_windows, dim=0),
+            "probe_ids_windows": torch.stack(probe_windows, dim=0),
+            "rev_ids_windows": torch.stack(rev_windows, dim=0),
+            "window_start_cycle": torch.as_tensor(start_cycles, dtype=torch.long),
+            "true_freq_hz": torch.as_tensor(self.param_freq[param_id], dtype=torch.float32),
+            "true_amp_real": torch.as_tensor(self.param_amp_real[param_id], dtype=torch.float32),
+            "true_amp_imag": torch.as_tensor(self.param_amp_imag[param_id], dtype=torch.float32),
+            "amp_scale": torch.as_tensor(amp_scale, dtype=torch.float32),
+            "noise_var_norm": torch.as_tensor(noise_var_norm, dtype=torch.float32),
+            "dataset_mode": torch.as_tensor(self.dataset_mode, dtype=torch.long),
+            "split_id": torch.as_tensor(SPLIT_ID[self.split], dtype=torch.long),
+            "use_long_sequence": torch.as_tensor(1, dtype=torch.long),
+            "chronological_split": torch.as_tensor(
+                int(self.chronological_split),
+                dtype=torch.long,
+            ),
+            "num_param_sets": torch.as_tensor(self.num_param_sets, dtype=torch.long),
+            "sequences_per_param": torch.as_tensor(self.sequences_per_param, dtype=torch.long),
+            "param_group_id": torch.as_tensor(param_id, dtype=torch.long),
+            "parent_sequence_id": torch.as_tensor(seq_id, dtype=torch.long),
+            "window_hop_cycles": torch.as_tensor(self.window_hop_cycles, dtype=torch.long),
+            "short_num_cycles": torch.as_tensor(self.short_num_cycles, dtype=torch.long),
+            "long_sequence_num_cycles": torch.as_tensor(
+                self.long_sequence_num_cycles,
+                dtype=torch.long,
+            ),
+            "train_ratio_x10000": torch.as_tensor(
+                int(round(float(self.train_ratio) * 10000)),
+                dtype=torch.long,
+            ),
+            "val_ratio_x10000": torch.as_tensor(
+                int(round(float(self.val_ratio) * 10000)),
+                dtype=torch.long,
+            ),
+            "is_windowed": torch.as_tensor(1, dtype=torch.long),
+            "is_iid_sequence": torch.as_tensor(0, dtype=torch.long),
+        }
+        return item
+
     def __getitem__(self, idx):
         parent_id, start_cycle = self.index[int(idx)]
+        if self.return_global_parent:
+            return self._build_static_global_parent_item(parent_id)
+
         param_id, seq_id = self.parent_specs[parent_id]
         sample = self._generate_parent(parent_id)
 

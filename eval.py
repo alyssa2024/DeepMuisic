@@ -4,9 +4,10 @@ import torch
 
 from batch_utils import extract_dataset_state
 from loss import (
+    _static_global_amp_prior_cfg,
     build_normalized_amp_prior,
+    compute_frequency_kl,
     compute_sequence_posterior_recon_loss,
-    kl_trunc_normal_trunc_normal,
 )
 
 
@@ -119,7 +120,7 @@ def evaluate_model(
     ls_amp_norm_values = []
     data_state_sums = {}
 
-    amp_prior_cfg = dict(loss_cfg.get("amplitude_prior", {}))
+    _, amp_prior_cfg = _static_global_amp_prior_cfg(loss_cfg)
     if signal_cfg is None:
         amp_prior_cfg["enabled"] = False
     use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
@@ -127,10 +128,11 @@ def evaluate_model(
 
     with torch.no_grad():
         for batch in dataloader:
-            x_batch = batch["x"].to(device)
-            t_batch = batch["t"].to(device)
-            probe_ids = batch["probe_ids"].to(device)
-            target_batch = batch["target"].to(device)
+            x_batch = batch["x_windows"].to(device)
+            t_batch = batch["t_windows"].to(device)
+            probe_ids = batch["probe_ids_windows"].to(device)
+            target_batch = batch["target_windows"].to(device)
+            window_start_cycle = batch["window_start_cycle"].to(device)
             noise_var_norm = batch["noise_var_norm"].to(device)
             dataset_state = extract_dataset_state(batch, device)
             true_freq = batch["true_freq_hz"].to(device)
@@ -140,14 +142,23 @@ def evaluate_model(
             )
             amp_scale = batch["amp_scale"].to(device)
 
-            t0 = t_batch[:, :1]
-            t_local = t_batch - t0
+            batch_size, num_windows, seq_len, _ = target_batch.shape
+            t0 = t_batch[:, 0, :1]
+            t_global = (t_batch - t0.view(batch_size, 1, 1)).reshape(
+                batch_size,
+                num_windows * seq_len,
+            )
+            target_global = target_batch.reshape(batch_size, num_windows * seq_len, 2)
 
-            outputs = model(x_batch, t_local, probe_ids=probe_ids)
+            outputs = model.forward_global(
+                x_batch,
+                probe_ids_windows=probe_ids,
+                window_start_cycle=window_start_cycle,
+            )
             mu_f = outputs["mu_f"]
             std_f = outputs["std_f"]
 
-            y_complex = torch.complex(target_batch[..., 0], target_batch[..., 1])
+            y_complex = torch.complex(target_global[..., 0], target_global[..., 1])
             n = x_batch.shape[0]
             k_count = mu_f.shape[1]
             if num_harmonics is None:
@@ -177,7 +188,7 @@ def evaluate_model(
                     c_mean, amp_post_var_diag, bayes_diag = model.solve_amplitudes_bayes(
                         y_complex=y_complex,
                         f=mu_f,
-                        t=t_local,
+                        t=t_global,
                         amp_prior_mean=amp_prior_mean,
                         amp_prior_var=amp_prior_var,
                         noise_var_norm=noise_var_norm,
@@ -192,7 +203,7 @@ def evaluate_model(
                         model.solve_amplitudes_map(
                             y_complex=y_complex,
                             f=mu_f,
-                            t=t_local,
+                            t=t_global,
                             amp_prior_mean=amp_prior_mean,
                             amp_prior_var=amp_prior_var,
                             noise_var_norm=noise_var_norm,
@@ -204,7 +215,7 @@ def evaluate_model(
                     model.solve_amplitudes_ls(
                         y_complex=y_complex,
                         f=mu_f,
-                        t=t_local,
+                        t=t_global,
                         ridge_lambda=model.ls_ridge,
                         return_condition=True,
                     )
@@ -213,13 +224,13 @@ def evaluate_model(
                 amp_real=amp_real_mean,
                 amp_imag=amp_imag_mean,
                 f=mu_f,
-                t=t_local,
+                t=t_global,
             )
-            recon_mse_mean = _complex_ri_mse(x_hat_mean, target_batch)
+            recon_mse_mean = _complex_ri_mse(x_hat_mean, target_global)
 
             sampled_recon_loss, sampled_diag = compute_sequence_posterior_recon_loss(
                 y_complex=y_complex,
-                t=t_local,
+                t=t_global,
                 mu_f=mu_f,
                 std_f=std_f,
                 model=model,
@@ -240,17 +251,11 @@ def evaluate_model(
             upper = model.encoder.freq_upper.to(device=mu_f.device, dtype=mu_f.dtype)
             freq_half = (upper - lower) / 2.0
             freq_center = (upper + lower) / 2.0
-            prior_cfg = loss_cfg.get("prior", loss_cfg.get("loss_prior", {}))
-            prior_std_ratio = float(prior_cfg.get("std_ratio_to_half_band", 0.5))
-            prior_mu_f = model.encoder.freq_mid
-            prior_std_f = prior_std_ratio * model.encoder.freq_half
-            freq_kl_per_item = kl_trunc_normal_trunc_normal(
-                mu_q=mu_f,
-                std_q=std_f,
-                mu_p=prior_mu_f,
-                std_p=prior_std_f,
-                lower=model.encoder.freq_lower,
-                upper=model.encoder.freq_upper,
+            freq_kl_per_item = compute_frequency_kl(
+                mu_f=mu_f,
+                std_f=std_f,
+                model=model,
+                loss_cfg=loss_cfg,
             )
             freq_kl_raw = freq_kl_per_item.sum(dim=-1).mean()
             freq_kl = freq_kl_raw
