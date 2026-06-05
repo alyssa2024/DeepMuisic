@@ -137,6 +137,7 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         freq_upper_hz=None,
         min_log_rho2=-12.0,
         max_log_rho2=-4.0,
+        init_log_rho2=None,
         **kwargs,
     ):
         super().__init__()
@@ -146,6 +147,8 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         self.num_harmonics = output_dim
         self.output_dim = output_dim
+        self.min_log_rho2 = float(min_log_rho2)
+        self.max_log_rho2 = float(max_log_rho2)
 
         self.input_proj = torch.nn.Linear(input_dim, hidden_dim)
         self.probe_embedding = torch.nn.Embedding(num_probes, hidden_dim)
@@ -194,6 +197,20 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         self._fc_f_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
         torch.nn.init.zeros_(self._fc_f_mu.weight)
         torch.nn.init.zeros_(self._fc_f_mu.bias)
+        if init_log_rho2 is not None:
+            init_log_rho2 = float(init_log_rho2)
+            if not (self.min_log_rho2 < init_log_rho2 < self.max_log_rho2):
+                raise ValueError(
+                    f"init_log_rho2={init_log_rho2} must lie inside "
+                    f"({self.min_log_rho2}, {self.max_log_rho2})"
+                )
+            s = (init_log_rho2 - self.min_log_rho2) / (
+                self.max_log_rho2 - self.min_log_rho2
+            )
+            s = min(max(s, 1e-6), 1.0 - 1e-6)
+            raw_bias = math.log(s / (1.0 - s))
+            torch.nn.init.zeros_(self._fc_f_logvar.weight)
+            torch.nn.init.constant_(self._fc_f_logvar.bias, raw_bias)
 
         self._device = device
         self._causal_mask = causal_mask
@@ -220,8 +237,6 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         self.register_buffer("freq_upper", freq_upper)
         self.register_buffer("freq_mid", 0.5 * (freq_lower + freq_upper))
         self.register_buffer("freq_half", 0.5 * (freq_upper - freq_lower))
-        self.min_log_rho2 = float(min_log_rho2)
-        self.max_log_rho2 = float(max_log_rho2)
 
         # Backward-compatible aliases for diagnostics.
         self.register_buffer("f_center", 0.5 * (freq_lower + freq_upper))

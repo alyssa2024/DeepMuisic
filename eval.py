@@ -75,6 +75,14 @@ def evaluate_model(
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
+    poe_diag_keys = (
+        "poe_invalid_precision_rate",
+        "poe_window_std_mean",
+        "poe_window_std_p95",
+        "poe_global_std_mean",
+        "poe_global_std_p95",
+        "poe_window_mu_std_mean",
+    )
 
     total_sequences = 0
     total_freq_elements = 0
@@ -121,6 +129,7 @@ def evaluate_model(
     ls_cond_values = []
     ls_amp_norm_values = []
     data_state_sums = {}
+    poe_diag_sums = {}
 
     _, amp_prior_cfg = _static_global_amp_prior_cfg(loss_cfg)
     if signal_cfg is None:
@@ -162,6 +171,13 @@ def evaluate_model(
 
             y_complex = torch.complex(target_global[..., 0], target_global[..., 1])
             n = x_batch.shape[0]
+            for key in poe_diag_keys:
+                if key in outputs:
+                    value = outputs[key]
+                    if torch.is_tensor(value):
+                        value = value.item()
+                    poe_diag_sums.setdefault(key, 0.0)
+                    poe_diag_sums[key] += float(value) * n
             k_count = mu_f.shape[1]
             if num_harmonics is None:
                 num_harmonics = k_count
@@ -386,6 +402,8 @@ def evaluate_model(
     for key in stats:
         stats[key] /= total_sequences
     for key, value in data_state_sums.items():
+        stats[key] = value / total_sequences
+    for key, value in poe_diag_sums.items():
         stats[key] = value / total_sequences
 
     if num_harmonics is None:

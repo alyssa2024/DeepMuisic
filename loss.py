@@ -887,6 +887,17 @@ def compute_static_global_objective(
         diagnostics["attn_entropy_mean"] = (
             -(attn * torch.log(attn.clamp_min(1e-12))).sum(dim=1).mean()
         ).detach()
+    for key in (
+        "poe_invalid_precision_rate",
+        "poe_window_std_mean",
+        "poe_window_std_p95",
+        "poe_global_std_mean",
+        "poe_global_std_p95",
+        "poe_window_mu_std_mean",
+    ):
+        if key in model_outputs:
+            value = model_outputs[key]
+            diagnostics[key] = value.detach() if torch.is_tensor(value) else value
 
     diagnostics.update(
         {

@@ -548,14 +548,25 @@ def main():
         freq_upper_hz=freq_upper,
         min_log_rho2=posterior_cfg.get("min_log_rho2", -12.0),
         max_log_rho2=posterior_cfg.get("max_log_rho2", -4.0),
+        init_log_rho2=posterior_cfg.get("init_log_rho2", None),
     )
+    global_agg_cfg = model_cfg.get("global_aggregation", {})
     model = PhysicalHarmonicVAE(
         encoder=encoder,
         ls_ridge=model_cfg.get("ls_ridge", 1e-6),
-        use_window_position_embedding=model_cfg.get(
-            "global_aggregation",
-            {},
-        ).get("use_window_position_embedding", True),
+        use_window_position_embedding=global_agg_cfg.get(
+            "use_window_position_embedding",
+            True,
+        ),
+        global_posterior_mode=global_agg_cfg.get("type", "attention_pooling"),
+        poe_prior_std_ratio_to_half_band=global_agg_cfg.get(
+            "prior_std_ratio_to_half_band",
+            freq_cfg.get("loss_prior", {}).get("std_ratio_to_half_band", 0.5),
+        ),
+        poe_clamp_invalid_precision=global_agg_cfg.get(
+            "clamp_invalid_precision",
+            True,
+        ),
     ).to(device)
     base_lr = float(train_cfg["lr"])
     optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
@@ -690,6 +701,12 @@ def main():
                 "objective_stage": 0.0,
                 "objective_num_windows": 0.0,
                 "objective_num_points": 0.0,
+                "poe_invalid_precision_rate": 0.0,
+                "poe_window_std_mean": 0.0,
+                "poe_window_std_p95": 0.0,
+                "poe_global_std_mean": 0.0,
+                "poe_global_std_p95": 0.0,
+                "poe_window_mu_std_mean": 0.0,
             }
             train_batches = 0
 
@@ -809,8 +826,15 @@ def main():
                     "objective_cycles",
                     "objective_num_windows",
                     "objective_num_points",
+                    "poe_invalid_precision_rate",
+                    "poe_window_std_mean",
+                    "poe_window_std_p95",
+                    "poe_global_std_mean",
+                    "poe_global_std_p95",
+                    "poe_window_mu_std_mean",
                 ):
-                    train_sums[key] += float(loss_diag[key].item())
+                    if key in loss_diag:
+                        train_sums[key] += float(loss_diag[key].item())
                 train_sums["objective_stage"] += float(curriculum_stage)
                 for key, value in loss_diag.items():
                     if not key.startswith("data_state/"):

@@ -10,12 +10,18 @@ class PhysicalHarmonicVAE(nn.Module):
         encoder: nn.Module,
         ls_ridge: float = 1e-6,
         use_window_position_embedding: bool = True,
+        global_posterior_mode: str = "attention_pooling",
+        poe_prior_std_ratio_to_half_band: float = 0.5,
+        poe_clamp_invalid_precision: bool = True,
     ):
         super().__init__()
         self.encoder = encoder
         self.num_harmonics = encoder.output_dim
         self.ls_ridge = float(ls_ridge)
         self.use_window_position_embedding = bool(use_window_position_embedding)
+        self.global_posterior_mode = str(global_posterior_mode)
+        self.poe_prior_std_ratio_to_half_band = float(poe_prior_std_ratio_to_half_band)
+        self.poe_clamp_invalid_precision = bool(poe_clamp_invalid_precision)
         feature_dim = int(getattr(encoder, "feature_dim"))
         self.window_pos_proj = nn.Linear(1, feature_dim)
         self.attn_mlp = nn.Sequential(
@@ -367,6 +373,99 @@ class PhysicalHarmonicVAE(nn.Module):
         phi = self.build_dictionary(f, t)
         return (phi * complex_amp.unsqueeze(1)).sum(dim=-1)
 
+    def fuse_window_posteriors_strict_poe(
+        self,
+        mu_win,
+        std_win,
+        eps: float = 1e-8,
+    ):
+        """
+        Strict prior-corrected diagonal-Gaussian product of experts.
+
+        q_G(f | Y) is proportional to p(f)^(1-M) prod_m q_m(f | y_m).
+        """
+        if mu_win.ndim != 3:
+            raise ValueError(f"mu_win must be [B, M, K], got {mu_win.shape}")
+        if std_win.shape != mu_win.shape:
+            raise ValueError(
+                f"std_win must match mu_win, got {std_win.shape} vs {mu_win.shape}"
+            )
+
+        _, num_windows, num_harmonics = mu_win.shape
+        device = mu_win.device
+        dtype = mu_win.dtype
+
+        prior_mu = self.encoder.freq_mid.to(device=device, dtype=dtype).view(
+            1,
+            1,
+            num_harmonics,
+        )
+        prior_std = (
+            self.poe_prior_std_ratio_to_half_band
+            * self.encoder.freq_half.to(device=device, dtype=dtype)
+        ).view(1, 1, num_harmonics)
+
+        var_win = std_win.pow(2).clamp_min(eps)
+        prec_win = 1.0 / var_win
+
+        var0 = prior_std.pow(2).clamp_min(eps)
+        prec0 = 1.0 / var0
+
+        prior_mu_2d = prior_mu.squeeze(1)
+        prec0_2d = prec0.squeeze(1)
+        precision_raw = prec_win.sum(dim=1) - (num_windows - 1) * prec0_2d
+        eta_raw = (prec_win * mu_win).sum(dim=1) - (
+            (num_windows - 1) * prec0_2d * prior_mu_2d
+        )
+
+        invalid_precision = precision_raw <= eps
+        invalid_rate = invalid_precision.float().mean()
+
+        if self.poe_clamp_invalid_precision:
+            min_precision = 1.0 / self.encoder.freq_half.to(
+                device=device,
+                dtype=dtype,
+            ).view(1, num_harmonics).pow(2).clamp_min(eps)
+            precision_g = torch.maximum(precision_raw, min_precision)
+        else:
+            if torch.any(invalid_precision):
+                raise RuntimeError(
+                    "Strict PoE produced non-positive global precision. "
+                    "Increase local posterior std initialization or use evidence PoE."
+                )
+            precision_g = precision_raw
+
+        precision_safe = precision_g.clamp_min(eps)
+        var_g = (1.0 / precision_safe).clamp_min(eps)
+        std_g = torch.sqrt(var_g)
+        mu_g = eta_raw / precision_safe
+
+        lower = self.encoder.freq_lower.to(device=device, dtype=dtype).view(
+            1,
+            num_harmonics,
+        )
+        upper = self.encoder.freq_upper.to(device=device, dtype=dtype).view(
+            1,
+            num_harmonics,
+        )
+        mu_g = torch.minimum(torch.maximum(mu_g, lower), upper)
+
+        logvar_g = 2.0 * torch.log(std_g.clamp_min(eps))
+        diagnostics = {
+            "window_mu_f": mu_win,
+            "window_std_f": std_win,
+            "poe_precision_raw": precision_raw,
+            "poe_precision": precision_g,
+            "poe_invalid_precision_rate": invalid_rate,
+            "poe_window_std_mean": std_win.mean(),
+            "poe_window_std_p95": torch.quantile(std_win.reshape(-1), 0.95),
+            "poe_global_std_mean": std_g.mean(),
+            "poe_global_std_p95": torch.quantile(std_g.reshape(-1), 0.95),
+            "poe_window_mu_std_mean": mu_win.std(dim=1, unbiased=False).mean(),
+        }
+
+        return mu_g, std_g, logvar_g, diagnostics
+
     def forward(self, x, t=None, probe_ids=None):
         encoder_out = self.encoder(x, probe_ids=probe_ids)
         if len(encoder_out) == 4:
@@ -415,6 +514,45 @@ class PhysicalHarmonicVAE(nn.Module):
 
         h_flat = self.encoder.encode_features(x_flat, probe_ids=probe_flat)
         h_windows = h_flat.reshape(batch_size, num_windows, -1)
+
+        if self.global_posterior_mode == "strict_poe":
+            h_post = h_windows.reshape(batch_size * num_windows, -1)
+            mu_flat, logvar_flat, std_flat, log_rho2_flat = (
+                self.encoder.posterior_from_global_feature(h_post)
+            )
+            del logvar_flat
+
+            mu_win = mu_flat.reshape(batch_size, num_windows, -1)
+            std_win = std_flat.reshape(batch_size, num_windows, -1)
+            log_rho2_win = log_rho2_flat.reshape(batch_size, num_windows, -1)
+
+            mu_f, std_f, logvar_f, poe_diag = self.fuse_window_posteriors_strict_poe(
+                mu_win=mu_win,
+                std_win=std_win,
+            )
+            freq_half = self.encoder.freq_half.to(
+                device=std_f.device,
+                dtype=std_f.dtype,
+            ).view(1, -1)
+            log_rho2_f = 2.0 * torch.log(std_f / freq_half.clamp_min(1e-12) + 1e-12)
+
+            return {
+                "mu_f": mu_f,
+                "std_f": std_f,
+                "logvar_f": logvar_f,
+                "log_rho2_f": log_rho2_f,
+                "h_windows": h_windows,
+                "window_mu_f": mu_win,
+                "window_std_f": std_win,
+                "window_log_rho2_f": log_rho2_win,
+                **poe_diag,
+            }
+
+        if self.global_posterior_mode != "attention_pooling":
+            raise ValueError(
+                "global_posterior_mode must be 'attention_pooling' or 'strict_poe', "
+                f"got {self.global_posterior_mode!r}"
+            )
 
         if self.use_window_position_embedding and window_start_cycle is not None:
             if window_start_cycle.shape != (batch_size, num_windows):
