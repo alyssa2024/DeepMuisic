@@ -660,7 +660,10 @@ def main():
             )
             train_sums = {
                 "loss": 0.0,
+                "optimization_loss": 0.0,
+                "loss_scale": 0.0,
                 "recon": 0.0,
+                "recon_loss_per_point": 0.0,
                 "recon_mse_sampled": 0.0,
                 "recon_nll_full": 0.0,
                 "freq_kl": 0.0,
@@ -780,8 +783,13 @@ def main():
                 total_steps += 1
                 train_batches += 1
 
-                train_sums["loss"] += loss.item()
+                train_sums["loss"] += float(loss_diag["loss"].item())
+                train_sums["optimization_loss"] += loss.item()
+                train_sums["loss_scale"] += float(loss_diag["loss_scale"].item())
                 train_sums["recon"] += recon.item()
+                train_sums["recon_loss_per_point"] += float(
+                    loss_diag["recon_loss_per_point"].item()
+                )
                 train_sums["recon_mse_sampled"] += float(loss_diag["recon_mse_sampled"].item())
                 train_sums["recon_nll_full"] += float(loss_diag["recon_nll_full"].item())
                 train_sums["freq_kl"] += float(loss_diag["freq_kl"].item())
@@ -829,8 +837,21 @@ def main():
                     train_sums.setdefault(key, 0.0)
                     train_sums[key] += float(value)
 
-                _log_scalar(writer, "train_step/loss", loss.item(), total_steps)
+                _log_scalar(writer, "train_step/loss", loss_diag["loss"].item(), total_steps)
+                _log_scalar(writer, "train_step/optimization_loss", loss.item(), total_steps)
+                _log_scalar(
+                    writer,
+                    "train_step/loss_scale",
+                    loss_diag["loss_scale"].item(),
+                    total_steps,
+                )
                 _log_scalar(writer, "train_step/recon", recon.item(), total_steps)
+                _log_scalar(
+                    writer,
+                    "train_step/recon_loss_per_point",
+                    loss_diag["recon_loss_per_point"].item(),
+                    total_steps,
+                )
                 _log_scalar(
                     writer,
                     "train_step/recon_mse_sampled",
@@ -894,6 +915,7 @@ def main():
             print(
                 f"epoch={epoch:04d} "
                 f"train_loss={train_means['loss']:.6f} "
+                f"opt_loss={train_means['optimization_loss']:.6f} "
                 f"train_recon_nll={train_means['recon']:.6f} "
                 f"train_recon_mse={train_means['recon_mse_sampled']:.6f} "
                 f"obj_cycles={train_means['objective_cycles']:.0f} "

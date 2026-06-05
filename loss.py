@@ -1413,11 +1413,25 @@ def compute_static_global_objective(
         )
     )
     amp_kl_weighted = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
-    loss = recon_loss + beta_freq * freq_kl_weighted + beta_amp * amp_kl_weighted
+    loss_unscaled = recon_loss + beta_freq * freq_kl_weighted + beta_amp * amp_kl_weighted
+    objective_num_points = max(int(num_windows * seq_len), 1)
+    optimization_loss_scale = (
+        1.0 / float(objective_num_points)
+        if mode == "static_global_strict_elbo"
+        else 1.0
+    )
+    loss = loss_unscaled * optimization_loss_scale
 
     diagnostics = {
-        "loss": loss.detach(),
+        "loss": loss_unscaled.detach(),
+        "optimization_loss": loss.detach(),
+        "loss_scale": torch.as_tensor(
+            optimization_loss_scale,
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
         "recon_loss": recon_loss.detach(),
+        "recon_loss_per_point": (recon_loss * optimization_loss_scale).detach(),
         "freq_kl": freq_kl_weighted.detach(),
         "freq_kl_raw": freq_kl_raw.detach(),
         "amp_kl": amp_kl_weighted.detach(),
@@ -1458,7 +1472,7 @@ def compute_static_global_objective(
             dtype=mu_f.dtype,
         ).detach(),
         "objective_num_points": torch.as_tensor(
-            int(num_windows * seq_len),
+            objective_num_points,
             device=mu_f.device,
             dtype=mu_f.dtype,
         ).detach(),

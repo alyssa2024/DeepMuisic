@@ -60,8 +60,11 @@ def evaluate_model(
 
     stats = {
         "loss": 0.0,
+        "optimization_loss": 0.0,
+        "loss_scale": 0.0,
         "recon_mse_mean": 0.0,
         "recon_mse_sampled": 0.0,
+        "recon_loss_per_point": 0.0,
         "recon_nll_sampled": 0.0,
         "recon_nll_full": 0.0,
         "amp_prior_quad": 0.0,
@@ -445,12 +448,18 @@ def evaluate_model(
             )
             amp_kl = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
             loss = sampled_recon_loss + beta_freq * freq_kl + beta_amp * amp_kl
+            objective_num_points = max(int(num_windows * seq_len), 1)
+            loss_scale = 1.0 / float(objective_num_points) if use_strict_elbo else 1.0
+            optimization_loss = loss * loss_scale
 
             total_sequences += n
             total_freq_elements += n * k_count
             stats["loss"] += loss.item() * n
+            stats["optimization_loss"] += optimization_loss.item() * n
+            stats["loss_scale"] += loss_scale * n
             stats["recon_mse_mean"] += recon_mse_mean.item() * n
             stats["recon_mse_sampled"] += recon_mse_sampled.item() * n
+            stats["recon_loss_per_point"] += sampled_recon_loss.item() * loss_scale * n
             stats["recon_nll_sampled"] += recon_nll_sampled.item() * n
             stats["recon_nll_full"] += recon_nll_full.item() * n
             stats["amp_prior_quad"] += sampled_diag["amp_prior_quad"].item() * n
