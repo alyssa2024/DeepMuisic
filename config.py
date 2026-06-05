@@ -117,9 +117,9 @@ CONFIG = {
         "reconstruction": {
             "type": "complex_gaussian_global_nll",
             "include_log_const": True,
-            "use_posterior_sampling": True,
-            "sequence_posterior_samples": 2,
-            "sample_at_train": True,
+            "use_posterior_sampling": False,
+            "sequence_posterior_samples": 1,
+            "sample_at_train": False,
             "eval_at_mean": True,
             "normalize_by_num_points": True,
         },
@@ -166,7 +166,7 @@ CONFIG = {
         },
         "lr_schedule": {
             "type": "warmup_cosine",
-            "warmup_steps": 1000,
+            "warmup_steps": 10,
             "min_lr": 1e-6,
         },
         "grad_clip": {
