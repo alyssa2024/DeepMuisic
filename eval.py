@@ -11,6 +11,7 @@ from loss import (
     compute_sequence_bayesian_nnamp_recon_loss,
     compute_sequence_nnamp_recon_loss,
     compute_sequence_posterior_recon_loss,
+    compute_sequence_strict_global_elbo_recon_loss,
     sample_sequence_frequencies,
 )
 
@@ -132,7 +133,12 @@ def evaluate_model(
         amp_prior_cfg["enabled"] = False
     use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
     amp_mode = amp_prior_cfg.get("mode", "map")
-    use_nn_amp = mode in ("static_global_nnamp", "static_global_bayesian_nnamp")
+    use_strict_elbo = mode == "static_global_strict_elbo"
+    use_nn_amp = mode in (
+        "static_global_nnamp",
+        "static_global_bayesian_nnamp",
+        "static_global_strict_elbo",
+    )
     use_bayesian_nnamp = mode == "static_global_bayesian_nnamp"
     ls_at_pred_recon_mse_sum = 0.0
     ls_at_pred_amp_mape_sum = 0.0
@@ -263,7 +269,27 @@ def evaluate_model(
             )
             recon_mse_mean = _complex_ri_mse(x_hat_mean, target_global)
 
-            if use_bayesian_nnamp:
+            if use_strict_elbo:
+                sampled_recon_loss, amp_kl_raw, sampled_diag = (
+                    compute_sequence_strict_global_elbo_recon_loss(
+                        y_complex=y_complex,
+                        t=t_global,
+                        mu_f=mu_f,
+                        std_f=std_f,
+                        amp_mu=outputs["c_nn"],
+                        amp_var=outputs["amp_var_nn"],
+                        model=model,
+                        noise_var_norm=noise_var_norm,
+                        amp_scale=amp_scale,
+                        t0=t0.squeeze(1),
+                        signal_cfg=signal_cfg,
+                        amp_prior_cfg=amp_prior_cfg,
+                        num_samples=s_seq,
+                        include_log_const=include_log_const,
+                        normalize_by_num_points=normalize_by_num_points,
+                    )
+                )
+            elif use_bayesian_nnamp:
                 if use_posterior_sampling:
                     f_eval_samples = sample_sequence_frequencies(
                         mu_f=mu_f,
@@ -415,7 +441,7 @@ def evaluate_model(
             amp_kl_cfg = loss_cfg.get("amplitude_kl", {})
             beta_amp = float(amp_kl_cfg.get("beta_amp", amp_kl_cfg.get("beta", 1.0)))
             amp_kl_enabled = bool(
-                amp_kl_cfg.get("enabled", use_bayesian_nnamp)
+                amp_kl_cfg.get("enabled", use_bayesian_nnamp or use_strict_elbo)
             )
             amp_kl = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
             loss = sampled_recon_loss + beta_freq * freq_kl + beta_amp * amp_kl

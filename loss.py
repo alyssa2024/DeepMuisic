@@ -370,6 +370,48 @@ def sample_sequence_frequencies(mu_f, std_f, num_samples, freq_lower, freq_upper
     )
 
 
+def sample_complex_normal_amplitudes(amp_mu, amp_var, num_samples, eps=1e-8):
+    """
+    Reparameterized sampling from diagonal circular complex Gaussian:
+
+        q(c|Y) = CN(amp_mu, diag(amp_var))
+
+    Convention:
+        amp_var_k = E[ |c_k - mu_k|^2 ]
+    """
+    if not torch.is_complex(amp_mu):
+        raise TypeError(f"amp_mu must be complex, got {amp_mu.dtype}")
+    if amp_var.shape != amp_mu.shape:
+        raise ValueError(
+            f"amp_var shape must match amp_mu: {amp_var.shape} vs {amp_mu.shape}"
+        )
+
+    num_samples = int(num_samples)
+    if num_samples < 1:
+        raise ValueError(f"num_samples must be >= 1, got {num_samples}")
+
+    real_dtype = amp_mu.real.dtype
+    amp_var = amp_var.to(device=amp_mu.device, dtype=real_dtype) + eps
+
+    eps_re = torch.randn(
+        num_samples,
+        *amp_mu.shape,
+        device=amp_mu.device,
+        dtype=real_dtype,
+    )
+    eps_im = torch.randn(
+        num_samples,
+        *amp_mu.shape,
+        device=amp_mu.device,
+        dtype=real_dtype,
+    )
+
+    scale = torch.sqrt(0.5 * amp_var).unsqueeze(0)
+    noise = torch.complex(scale * eps_re, scale * eps_im)
+
+    return amp_mu.unsqueeze(0) + noise
+
+
 def compute_sequence_posterior_recon_loss(
     y_complex,
     t,
@@ -741,7 +783,7 @@ def complex_diag_gaussian_kl(mu_q, var_q, mu_p, var_p, eps=1e-8):
             "Complex Gaussian KL expects var_q/var_p to match mu_q shape: "
             f"{var_q.shape}/{var_p.shape} vs {mu_q.shape}"
         )
-    var_q = var_q.to(device=mu_q.device, dtype=mu_q.real.dtype).clamp_min(eps)
+    var_q = var_q.to(device=mu_q.device, dtype=mu_q.real.dtype) + eps
     var_p = var_p.to(device=mu_q.device, dtype=mu_q.real.dtype).clamp_min(eps)
     diff2 = torch.abs(mu_q - mu_p.to(device=mu_q.device, dtype=mu_q.dtype)) ** 2
     kl_per_harmonic = torch.log(var_p / var_q) + (var_q + diff2) / var_p - 1.0
@@ -790,7 +832,7 @@ def compute_sequence_bayesian_nnamp_recon_loss(
                 f"noise_var_norm must have shape [B], got {noise_var_norm.shape}"
             )
     noise_var = noise_var.clamp_min(eps)
-    amp_var = amp_var.to(device=y_complex.device, dtype=y_complex.real.dtype).clamp_min(eps)
+    amp_var = amp_var.to(device=y_complex.device, dtype=y_complex.real.dtype) + eps
 
     if f_samples is None:
         f_samples = mu_f.unsqueeze(0)
@@ -869,6 +911,172 @@ def compute_sequence_bayesian_nnamp_recon_loss(
     return recon_loss, diagnostics
 
 
+def compute_sequence_strict_global_elbo_recon_loss(
+    y_complex,
+    t,
+    mu_f,
+    std_f,
+    amp_mu,
+    amp_var,
+    model,
+    noise_var_norm,
+    amp_scale,
+    t0,
+    signal_cfg,
+    amp_prior_cfg,
+    num_samples,
+    include_log_const=True,
+    normalize_by_num_points=False,
+    eps=1e-8,
+):
+    """
+    Strict global ELBO reconstruction term for z=(f, c).
+
+    Estimates E_q(f|Y)q(c|Y)[-log p(Y|f,c)] by Monte Carlo sampling both
+    frequency and amplitude latents. The likelihood never substitutes a
+    posterior mean for f or c.
+    """
+    if not torch.is_complex(y_complex):
+        raise TypeError(f"y_complex must be complex, got {y_complex.dtype}")
+    if not torch.is_complex(amp_mu):
+        raise TypeError(f"amp_mu must be complex, got {amp_mu.dtype}")
+    if amp_mu.shape != mu_f.shape:
+        raise ValueError(f"amp_mu shape must match mu_f: {amp_mu.shape} vs {mu_f.shape}")
+    if amp_var.shape != mu_f.shape:
+        raise ValueError(f"amp_var shape must match mu_f: {amp_var.shape} vs {mu_f.shape}")
+    if noise_var_norm is None:
+        raise ValueError(
+            "Strict complex Gaussian ELBO requires noise_var_norm. It must be "
+            "sigma^2 = E[|w|^2] in the normalized signal domain."
+        )
+
+    noise_var = noise_var_norm.to(
+        device=y_complex.device,
+        dtype=y_complex.real.dtype,
+    )
+    if noise_var.ndim != 1 or noise_var.shape[0] != y_complex.shape[0]:
+        raise ValueError(f"noise_var_norm must have shape [B], got {noise_var.shape}")
+    noise_var = noise_var.clamp_min(eps)
+    amp_var = amp_var.to(device=y_complex.device, dtype=y_complex.real.dtype) + eps
+
+    f_samples = sample_sequence_frequencies(
+        mu_f=mu_f,
+        std_f=std_f,
+        num_samples=num_samples,
+        freq_lower=model.encoder.freq_lower,
+        freq_upper=model.encoder.freq_upper,
+    )
+    c_samples = sample_complex_normal_amplitudes(
+        amp_mu=amp_mu,
+        amp_var=amp_var,
+        num_samples=num_samples,
+        eps=eps,
+    )
+
+    y_hat_samples = []
+    sqerr_per_sample = []
+    nll_per_sample = []
+    seq_len = y_complex.shape[1]
+
+    for s in range(int(num_samples)):
+        phi_s = model.build_dictionary(f_samples[s], t)
+        y_hat_s = (phi_s * c_samples[s].unsqueeze(1)).sum(dim=-1)
+        sqerr_s = torch.abs(y_hat_s - y_complex) ** 2
+        nll_s = (sqerr_s / noise_var.view(-1, 1)).sum(dim=-1)
+        if include_log_const:
+            nll_s = nll_s + seq_len * torch.log(math.pi * noise_var)
+        if normalize_by_num_points:
+            nll_s = nll_s / seq_len
+
+        y_hat_samples.append(y_hat_s)
+        sqerr_per_sample.append(sqerr_s)
+        nll_per_sample.append(nll_s)
+
+    y_hat_samples = torch.stack(y_hat_samples, dim=0)
+    sqerr_per_sample = torch.stack(sqerr_per_sample, dim=0)
+    nll_per_sample = torch.stack(nll_per_sample, dim=0)
+    recon_loss = nll_per_sample.mean()
+
+    amp_kl_samples = []
+    amp_prior_mean_samples = []
+    amp_prior_var_samples = []
+    for s in range(int(num_samples)):
+        amp_prior_mean_s, amp_prior_var_s = build_normalized_amp_prior(
+            f=f_samples[s],
+            t0=t0,
+            amp_scale=amp_scale,
+            signal_cfg=signal_cfg,
+            amp_prior_cfg=amp_prior_cfg,
+            eps=eps,
+        )
+        amp_kl_samples.append(
+            complex_diag_gaussian_kl(
+                mu_q=amp_mu,
+                var_q=amp_var,
+                mu_p=amp_prior_mean_s,
+                var_p=amp_prior_var_s,
+                eps=eps,
+            )
+        )
+        amp_prior_mean_samples.append(amp_prior_mean_s)
+        amp_prior_var_samples.append(amp_prior_var_s)
+
+    amp_kl_samples = torch.stack(amp_kl_samples, dim=0)
+    amp_kl_raw = amp_kl_samples.mean()
+    amp_prior_mean_samples = torch.stack(amp_prior_mean_samples, dim=0)
+    amp_prior_var_samples = torch.stack(amp_prior_var_samples, dim=0)
+
+    recon_mse_sampled = sqerr_per_sample.mean()
+    zero = torch.zeros((), device=y_complex.device, dtype=y_complex.real.dtype)
+    amp_norm = torch.linalg.norm(c_samples, dim=-1)
+
+    diagnostics = {
+        "f_samples": f_samples,
+        "y_hat_samples": y_hat_samples,
+        "c_hat_samples": c_samples,
+        "recon_mse_sampled": recon_mse_sampled,
+        "expected_recon_mse": recon_mse_sampled,
+        "recon_nll": recon_loss,
+        "recon_nll_full": recon_loss,
+        "amp_prior_quad": zero,
+        "amp_lambda_mean": zero,
+        "amp_lambda_min": zero,
+        "amp_lambda_max": zero,
+        "amp_prior_var_norm_mean": amp_prior_var_samples.mean(),
+        "marginal_nll": zero,
+        "marginal_quad": zero,
+        "marginal_logdet": zero,
+        "amp_post_var_trace": amp_var.sum(dim=-1).mean(),
+        "amp_post_std_mean": torch.sqrt(amp_var).mean(),
+        "amp_uncertainty_to_prior_ratio_mean": (
+            amp_var.unsqueeze(0) / amp_prior_var_samples.clamp_min(eps)
+        ).mean(),
+        "noise_var_norm_mean": noise_var.mean(),
+        "noise_var_norm_min": noise_var.min(),
+        "noise_var_norm_max": noise_var.max(),
+        "freq_sample_std_mean": f_samples.std(dim=0, unbiased=False).mean(),
+        "ls_cond_mean": zero,
+        "ls_cond_p95": zero,
+        "ls_amp_norm_mean": zero,
+        "ls_amp_norm_p95": zero,
+        "map_amp_norm_mean": zero,
+        "map_amp_norm_p95": zero,
+        "nn_amp_norm_mean": amp_norm.mean(),
+        "nn_amp_norm_p95": torch.quantile(amp_norm.reshape(-1), 0.95),
+        "nn_amp_var_mean": amp_var.mean(),
+        "nn_amp_var_min": amp_var.min(),
+        "nn_amp_var_max": amp_var.max(),
+        "strict_mc_nll_mean": recon_loss,
+        "strict_mc_num_samples": torch.as_tensor(
+            num_samples,
+            device=y_complex.device,
+            dtype=y_complex.real.dtype,
+        ),
+    }
+
+    return recon_loss, amp_kl_raw, diagnostics
+
+
 def uniform_support_penalty(f_samples, freq_lower, freq_upper):
     if f_samples.ndim != 3:
         raise ValueError(f"f_samples must be [S, B, K], got {f_samples.shape}")
@@ -898,6 +1106,10 @@ def _static_global_amp_prior_cfg(loss_cfg):
         amp_prior_cfg["enabled"] = True
         amp_prior_cfg["mode"] = "nnamp_kl"
         amp_prior_cfg["include_prior_penalty"] = False
+    elif mode == "static_global_strict_elbo":
+        amp_prior_cfg["enabled"] = True
+        amp_prior_cfg["mode"] = "strict_nnamp_kl"
+        amp_prior_cfg["include_prior_penalty"] = False
     elif mode == "static_global_mapls":
         amp_prior_cfg["enabled"] = True
         amp_prior_cfg["mode"] = "map"
@@ -910,7 +1122,7 @@ def _static_global_amp_prior_cfg(loss_cfg):
         raise ValueError(
             "loss.elbo.mode must be one of "
             "'static_global_ls', 'static_global_nnamp', "
-            "'static_global_bayesian_nnamp', "
+            "'static_global_bayesian_nnamp', 'static_global_strict_elbo', "
             "'static_global_mapls', 'static_global_bayesianls'; "
             f"got {mode!r}"
         )
@@ -1048,7 +1260,52 @@ def compute_static_global_objective(
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
     amp_kl_raw = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
-    if mode == "static_global_bayesian_nnamp":
+    if mode == "static_global_strict_elbo":
+        for required_key in ("c_nn", "amp_var_nn"):
+            if required_key not in model_outputs:
+                raise KeyError(
+                    f"static_global_strict_elbo requires model_outputs[{required_key!r}]"
+                )
+        if signal_cfg is None or amp_scale is None:
+            raise ValueError(
+                "static_global_strict_elbo requires signal_cfg and amp_scale "
+                "to build p(c|f)."
+            )
+        if not include_log_const:
+            raise ValueError(
+                "Strict complex Gaussian ELBO should use include_log_const=True."
+            )
+        if normalize_by_num_points:
+            raise ValueError(
+                "Strict sequence ELBO should use normalize_by_num_points=False. "
+                "If per-point logging is needed, compute it only as a diagnostic."
+            )
+        if not use_posterior_sampling:
+            raise ValueError(
+                "static_global_strict_elbo requires use_posterior_sampling=True. "
+                "Do not replace q(f|Y) by mu_f."
+            )
+
+        recon_loss, amp_kl_raw, recon_diag = (
+            compute_sequence_strict_global_elbo_recon_loss(
+                y_complex=y_complex,
+                t=t_global,
+                mu_f=mu_f,
+                std_f=std_f,
+                amp_mu=model_outputs["c_nn"],
+                amp_var=model_outputs["amp_var_nn"],
+                model=model,
+                noise_var_norm=noise_var_norm,
+                amp_scale=amp_scale,
+                t0=t0,
+                signal_cfg=signal_cfg,
+                amp_prior_cfg=amp_prior_cfg,
+                num_samples=s_seq,
+                include_log_const=include_log_const,
+                normalize_by_num_points=normalize_by_num_points,
+            )
+        )
+    elif mode == "static_global_bayesian_nnamp":
         for required_key in ("c_nn", "amp_var_nn"):
             if required_key not in model_outputs:
                 raise KeyError(
@@ -1149,7 +1406,12 @@ def compute_static_global_objective(
     freq_kl_weighted = beta_anneal * freq_kl_raw
     amp_kl_cfg = loss_cfg.get("amplitude_kl", {})
     beta_amp = float(amp_kl_cfg.get("beta_amp", amp_kl_cfg.get("beta", 1.0)))
-    amp_kl_enabled = bool(amp_kl_cfg.get("enabled", mode == "static_global_bayesian_nnamp"))
+    amp_kl_enabled = bool(
+        amp_kl_cfg.get(
+            "enabled",
+            mode in ("static_global_bayesian_nnamp", "static_global_strict_elbo"),
+        )
+    )
     amp_kl_weighted = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
     loss = recon_loss + beta_freq * freq_kl_weighted + beta_amp * amp_kl_weighted
 
