@@ -10,7 +10,6 @@ DATASET_STATE_KEYS = [
     "sequences_per_param",
     "param_group_id",
     "parent_sequence_id",
-    "true_freq_hz",
     "window_start_cycle",
     "window_hop_cycles",
     "short_num_cycles",

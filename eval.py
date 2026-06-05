@@ -5,7 +5,7 @@ import torch
 from batch_utils import extract_dataset_state
 from loss import (
     _static_global_amp_prior_cfg,
-    _select_frequency_for_amp_warmup,
+    _select_amp_warmup_frequency,
     build_normalized_amp_prior,
     complex_diag_gaussian_kl,
     compute_frequency_kl,
@@ -90,6 +90,10 @@ def evaluate_model(
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
     include_log_const = bool(rec_cfg.get("include_log_const", False))
+    amp_warmup_cfg = loss_cfg.get("amplitude_warmup", {})
+    amp_warmup_enabled = bool(amp_warmup_cfg.get("enabled", False))
+    amp_freq_source = amp_warmup_cfg.get("frequency_source", "mu_f")
+    detach_amp_frequency = bool(amp_warmup_cfg.get("detach_frequency", True))
     amp_sup_cfg = loss_cfg.get("amp_supervision", {})
     amp_sup_enabled = bool(amp_sup_cfg.get("enabled", False))
     amp_sup_weight = float(amp_sup_cfg.get("weight", 1.0))
@@ -194,14 +198,16 @@ def evaluate_model(
             y_complex = torch.complex(target_global[..., 0], target_global[..., 1])
             n = x_batch.shape[0]
             k_count = mu_f.shape[1]
-            f_amp_warmup = mu_f
-            if mode == "static_global_nnamp" and amp_sup_enabled:
-                f_amp_warmup, _ = _select_frequency_for_amp_warmup(
+            if amp_warmup_enabled:
+                f_amp_eval = _select_amp_warmup_frequency(
+                    source=amp_freq_source,
                     mu_f=mu_f,
                     model=model,
-                    amp_sup_cfg=amp_sup_cfg,
-                    dataset_state=dataset_state,
+                    true_freq_hz=true_freq,
+                    detach=detach_amp_frequency,
                 )
+            else:
+                f_amp_eval = mu_f
             if num_harmonics is None:
                 num_harmonics = k_count
                 freq_sqerr_sum = torch.zeros(k_count, dtype=torch.float64)
@@ -284,7 +290,7 @@ def evaluate_model(
             x_hat_mean = model.decode(
                 amp_real=amp_real_mean,
                 amp_imag=amp_imag_mean,
-                f=f_amp_warmup if mode == "static_global_nnamp" else mu_f,
+                f=f_amp_eval if mode == "static_global_nnamp" else mu_f,
                 t=t_global,
             )
             recon_mse_mean = _complex_ri_mse(x_hat_mean, target_global)
@@ -343,7 +349,7 @@ def evaluate_model(
                 sampled_recon_loss, sampled_diag = compute_sequence_nnamp_recon_loss(
                     y_complex=y_complex,
                     t=t_global,
-                    mu_f=f_amp_warmup if mode == "static_global_nnamp" else mu_f,
+                    mu_f=f_amp_eval if mode == "static_global_nnamp" else mu_f,
                     c_nn=outputs["c_nn"],
                     model=model,
                     noise_var_norm=noise_var_norm,
@@ -419,7 +425,7 @@ def evaluate_model(
 
             ls_amp_real_pred, ls_amp_imag_pred, c_ls_pred, _ = model.solve_amplitudes_ls(
                 y_complex=y_complex,
-                f=f_amp_warmup if mode == "static_global_nnamp" else mu_f,
+                f=f_amp_eval if mode == "static_global_nnamp" else mu_f,
                 t=t_global,
                 ridge_lambda=model.ls_ridge,
                 return_condition=True,
@@ -427,7 +433,7 @@ def evaluate_model(
             x_hat_ls_pred = model.decode(
                 amp_real=ls_amp_real_pred,
                 amp_imag=ls_amp_imag_pred,
-                f=mu_f,
+                f=f_amp_eval if mode == "static_global_nnamp" else mu_f,
                 t=t_global,
             )
             ls_at_pred_recon_mse = _complex_ri_mse(x_hat_ls_pred, target_global)

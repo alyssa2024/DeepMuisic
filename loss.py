@@ -1196,35 +1196,40 @@ def compute_frequency_kl(mu_f, std_f, model, loss_cfg):
     raise ValueError(f"Unsupported loss.kl.type={kl_type!r}")
 
 
-def _select_frequency_for_amp_warmup(
-    mu_f,
+def _select_amp_warmup_frequency(
+    source: str,
+    mu_f: torch.Tensor,
     model,
-    amp_sup_cfg,
-    dataset_state=None,
-):
-    source = amp_sup_cfg.get("frequency_for_amp_warmup", "mu_f")
+    true_freq_hz: torch.Tensor = None,
+    detach: bool = True,
+) -> torch.Tensor:
     if source == "mu_f":
-        return mu_f, source
-    if source == "center":
-        return model.encoder.freq_mid.to(device=mu_f.device, dtype=mu_f.dtype).view(
+        f_amp = mu_f
+    elif source == "center":
+        f_amp = model.encoder.freq_mid.to(device=mu_f.device, dtype=mu_f.dtype).view(
             1,
             -1,
-        ).expand_as(mu_f), source
-    if source == "oracle":
-        if dataset_state is None or "true_freq_hz" not in dataset_state:
+        ).expand_as(mu_f)
+    elif source == "oracle":
+        if true_freq_hz is None:
             raise ValueError(
-                "frequency_for_amp_warmup='oracle' requires "
-                "dataset_state['true_freq_hz']"
+                "amplitude_warmup.frequency_source='oracle' requires true_freq_hz"
             )
-        return dataset_state["true_freq_hz"].to(
+        f_amp = true_freq_hz.to(
             device=mu_f.device,
             dtype=mu_f.dtype,
-        ), source
-    raise ValueError(
-        "loss.amp_supervision.frequency_for_amp_warmup must be one of "
-        "'mu_f', 'center', 'oracle'; "
-        f"got {source!r}"
-    )
+        )
+        if f_amp.shape != mu_f.shape:
+            raise ValueError(
+                f"true_freq_hz shape {f_amp.shape} must match mu_f {mu_f.shape}"
+            )
+    else:
+        raise ValueError(
+            "amplitude_warmup.frequency_source must be one of "
+            "'mu_f', 'center', 'oracle'"
+        )
+
+    return f_amp.detach() if detach else f_amp
 
 
 def compute_static_global_objective(
@@ -1237,6 +1242,7 @@ def compute_static_global_objective(
     amp_scale=None,
     signal_cfg=None,
     dataset_state=None,
+    true_freq_hz=None,
     global_step=None,
     objective_cycles=None,
     short_num_cycles=None,
@@ -1290,17 +1296,20 @@ def compute_static_global_objective(
     include_log_const = bool(rec_cfg.get("include_log_const", False))
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
-    amp_sup_cfg = loss_cfg.get("amp_supervision", {})
-    amp_sup_enabled = bool(amp_sup_cfg.get("enabled", False))
-    f_amp_warmup = mu_f
-    amp_warmup_source = "mu_f"
-    if mode == "static_global_nnamp" and amp_sup_enabled:
-        f_amp_warmup, amp_warmup_source = _select_frequency_for_amp_warmup(
+    amp_warmup_cfg = loss_cfg.get("amplitude_warmup", {})
+    amp_warmup_enabled = bool(amp_warmup_cfg.get("enabled", False))
+    amp_freq_source = amp_warmup_cfg.get("frequency_source", "mu_f")
+    detach_amp_frequency = bool(amp_warmup_cfg.get("detach_frequency", True))
+    if amp_warmup_enabled:
+        f_amp = _select_amp_warmup_frequency(
+            source=amp_freq_source,
             mu_f=mu_f,
             model=model,
-            amp_sup_cfg=amp_sup_cfg,
-            dataset_state=dataset_state,
+            true_freq_hz=true_freq_hz,
+            detach=detach_amp_frequency,
         )
+    else:
+        f_amp = mu_f
     amp_kl_raw = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
     if mode == "static_global_strict_elbo":
         for required_key in ("c_nn", "amp_var_nn"):
@@ -1404,7 +1413,7 @@ def compute_static_global_objective(
         recon_loss, recon_diag = compute_sequence_nnamp_recon_loss(
             y_complex=y_complex,
             t=t_global,
-            mu_f=f_amp_warmup,
+            mu_f=f_amp,
             c_nn=model_outputs["c_nn"],
             model=model,
             noise_var_norm=noise_var_norm,
@@ -1455,6 +1464,8 @@ def compute_static_global_objective(
         )
     )
     amp_kl_weighted = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
+    amp_sup_cfg = loss_cfg.get("amp_supervision", {})
+    amp_sup_enabled = bool(amp_sup_cfg.get("enabled", False))
     amp_sup_weight = float(amp_sup_cfg.get("weight", 1.0))
     amp_sup_loss_raw = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
     amp_sup_target_norm = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
@@ -1468,7 +1479,7 @@ def compute_static_global_objective(
             raise KeyError("amp_supervision requires model_outputs['c_nn']")
         _, _, amp_sup_target, _ = model.solve_amplitudes_ls(
             y_complex=y_complex,
-            f=f_amp_warmup,
+            f=f_amp,
             t=t_global,
             ridge_lambda=model.ls_ridge,
             return_condition=True,
@@ -1523,7 +1534,7 @@ def compute_static_global_objective(
         "amp_supervision_target_norm_mean": amp_sup_target_norm.detach(),
         "amp_supervision_error_norm_mean": amp_sup_error_norm.detach(),
         "amp_supervision_frequency_source_id": torch.as_tensor(
-            {"mu_f": 0, "center": 1, "oracle": 2}[amp_warmup_source],
+            {"mu_f": 0, "center": 1, "oracle": 2}[amp_freq_source],
             device=mu_f.device,
             dtype=mu_f.dtype,
         ).detach(),

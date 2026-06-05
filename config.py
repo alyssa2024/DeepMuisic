@@ -111,7 +111,7 @@ CONFIG = {
         "init_logvar": -8.0,
     },
     "loss": {
-        "beta_freq": 1.0,
+        "beta_freq": 0.0,
         "reconstruction": {
             "type": "complex_gaussian_global_nll",
             "include_log_const": False,
@@ -139,10 +139,14 @@ CONFIG = {
             "enabled": False,
             "beta_amp": 0.0,
         },
+        "amplitude_warmup": {
+            "enabled": True,
+            "frequency_source": "center",
+            "detach_frequency": True,
+        },
         "amp_supervision": {
             "enabled": True,
             "target": "ls_at_mu_f",
-            "frequency_for_amp_warmup": "center",
             "weight": 300.0,
             "stop_gradient_target": True,
         },
@@ -168,11 +172,6 @@ CONFIG = {
             "lr_per_stage": [2e-5, 2e-5, 1e-5, 8e-6, 6e-6],
             "segment_mode": "prefix",
             "apply_to_encoder": True,
-        },
-        "lr_schedule": {
-            "type": "warmup_cosine",
-            "warmup_steps": 10,
-            "min_lr": 1e-6,
         },
         "early_stopping": {
             "enabled": False,

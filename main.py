@@ -715,6 +715,7 @@ def main():
                 window_start_cycle = batch["window_start_cycle"].to(device)
                 noise_var_norm = batch["noise_var_norm"].to(device)
                 amp_scale = batch["amp_scale"].to(device)
+                true_freq_hz = batch["true_freq_hz"].to(device)
                 dataset_state = extract_dataset_state(batch, device)
 
                 objective_num_windows = _num_windows_for_objective(
@@ -747,6 +748,7 @@ def main():
                     amp_scale=amp_scale,
                     signal_cfg=signal_cfg,
                     dataset_state=dataset_state,
+                    true_freq_hz=true_freq_hz,
                     global_step=total_steps + 1,
                     objective_cycles=objective_cycles,
                     short_num_cycles=short_num_cycles,
