@@ -142,7 +142,8 @@ CONFIG = {
         "amp_supervision": {
             "enabled": True,
             "target": "ls_at_mu_f",
-            "weight": 1.0,
+            "frequency_for_amp_warmup": "center",
+            "weight": 300.0,
             "stop_gradient_target": True,
         },
         "elbo": {
@@ -167,6 +168,11 @@ CONFIG = {
             "lr_per_stage": [2e-5, 2e-5, 1e-5, 8e-6, 6e-6],
             "segment_mode": "prefix",
             "apply_to_encoder": True,
+        },
+        "lr_schedule": {
+            "type": "warmup_cosine",
+            "warmup_steps": 10,
+            "min_lr": 1e-6,
         },
         "early_stopping": {
             "enabled": False,

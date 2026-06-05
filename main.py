@@ -675,6 +675,7 @@ def main():
                 "amp_supervision_weight": 0.0,
                 "amp_supervision_target_norm_mean": 0.0,
                 "amp_supervision_error_norm_mean": 0.0,
+                "amp_supervision_frequency_source_id": 0.0,
                 "freq_kl_beta_anneal": 0.0,
                 "freq_prior_reg": 0.0,
                 "posterior_std_hz_mean": 0.0,
@@ -815,6 +816,9 @@ def main():
                 )
                 train_sums["amp_supervision_error_norm_mean"] += float(
                     loss_diag["amp_supervision_error_norm_mean"].item()
+                )
+                train_sums["amp_supervision_frequency_source_id"] += float(
+                    loss_diag["amp_supervision_frequency_source_id"].item()
                 )
                 train_sums["freq_kl_beta_anneal"] += float(
                     loss_diag["freq_kl_beta_anneal"].item()
