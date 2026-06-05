@@ -71,6 +71,11 @@ def evaluate_model(
         "marginal_nll": 0.0,
         "marginal_quad": 0.0,
         "marginal_logdet": 0.0,
+        "amp_supervision_loss": 0.0,
+        "amp_supervision_loss_raw": 0.0,
+        "amp_supervision_weight": 0.0,
+        "amp_supervision_target_norm_mean": 0.0,
+        "amp_supervision_error_norm_mean": 0.0,
     }
 
     success_cfg = loss_cfg.get("success", {})
@@ -84,6 +89,9 @@ def evaluate_model(
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
     include_log_const = bool(rec_cfg.get("include_log_const", False))
+    amp_sup_cfg = loss_cfg.get("amp_supervision", {})
+    amp_sup_enabled = bool(amp_sup_cfg.get("enabled", False))
+    amp_sup_weight = float(amp_sup_cfg.get("weight", 1.0))
 
     total_sequences = 0
     total_freq_elements = 0
@@ -447,9 +455,34 @@ def evaluate_model(
                 amp_kl_cfg.get("enabled", use_bayesian_nnamp or use_strict_elbo)
             )
             amp_kl = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
-            loss = sampled_recon_loss + beta_freq * freq_kl + beta_amp * amp_kl
+            amp_sup_loss_raw = torch.zeros((), device=device, dtype=target_batch.dtype)
+            amp_sup_target_norm = torch.zeros((), device=device, dtype=target_batch.dtype)
+            amp_sup_error_norm = torch.zeros((), device=device, dtype=target_batch.dtype)
+            if amp_sup_enabled:
+                if amp_sup_cfg.get("target", "ls_at_mu_f") != "ls_at_mu_f":
+                    raise ValueError(
+                        "loss.amp_supervision.target currently only supports "
+                        "'ls_at_mu_f'"
+                    )
+                if "c_nn" not in outputs:
+                    raise KeyError("amp_supervision requires model outputs['c_nn']")
+                amp_sup_error = outputs["c_nn"] - c_ls_pred
+                amp_sup_loss_raw = torch.mean(torch.abs(amp_sup_error) ** 2)
+                amp_sup_target_norm = torch.linalg.norm(c_ls_pred, dim=-1).mean()
+                amp_sup_error_norm = torch.linalg.norm(amp_sup_error, dim=-1).mean()
+            amp_sup_loss = amp_sup_weight * amp_sup_loss_raw
+            loss = sampled_recon_loss + amp_sup_loss + beta_freq * freq_kl + beta_amp * amp_kl
             objective_num_points = max(int(num_windows * seq_len), 1)
-            loss_scale = 1.0 / float(objective_num_points) if use_strict_elbo else 1.0
+            scale_modes = {
+                "static_global_strict_elbo",
+                "static_global_nnamp",
+                "static_global_bayesian_nnamp",
+            }
+            loss_scale = (
+                1.0 / float(objective_num_points)
+                if mode in scale_modes and not normalize_by_num_points
+                else 1.0
+            )
             optimization_loss = loss * loss_scale
 
             total_sequences += n
@@ -466,6 +499,11 @@ def evaluate_model(
             stats["marginal_nll"] += sampled_diag["marginal_nll"].item() * n
             stats["marginal_quad"] += sampled_diag["marginal_quad"].item() * n
             stats["marginal_logdet"] += sampled_diag["marginal_logdet"].item() * n
+            stats["amp_supervision_loss"] += amp_sup_loss.item() * n
+            stats["amp_supervision_loss_raw"] += amp_sup_loss_raw.item() * n
+            stats["amp_supervision_weight"] += amp_sup_weight * n
+            stats["amp_supervision_target_norm_mean"] += amp_sup_target_norm.item() * n
+            stats["amp_supervision_error_norm_mean"] += amp_sup_error_norm.item() * n
             amp_kl_sum += amp_kl.item() * n
             amp_kl_raw_sum += amp_kl_raw.item() * n
             ls_at_pred_recon_mse_sum += ls_at_pred_recon_mse.item() * n

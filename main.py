@@ -670,6 +670,11 @@ def main():
                 "freq_kl_raw": 0.0,
                 "amp_kl": 0.0,
                 "amp_kl_raw": 0.0,
+                "amp_supervision_loss": 0.0,
+                "amp_supervision_loss_raw": 0.0,
+                "amp_supervision_weight": 0.0,
+                "amp_supervision_target_norm_mean": 0.0,
+                "amp_supervision_error_norm_mean": 0.0,
                 "freq_kl_beta_anneal": 0.0,
                 "freq_prior_reg": 0.0,
                 "posterior_std_hz_mean": 0.0,
@@ -796,6 +801,21 @@ def main():
                 train_sums["freq_kl_raw"] += float(loss_diag["freq_kl_raw"].item())
                 train_sums["amp_kl"] += float(loss_diag["amp_kl"].item())
                 train_sums["amp_kl_raw"] += float(loss_diag["amp_kl_raw"].item())
+                train_sums["amp_supervision_loss"] += float(
+                    loss_diag["amp_supervision_loss"].item()
+                )
+                train_sums["amp_supervision_loss_raw"] += float(
+                    loss_diag["amp_supervision_loss_raw"].item()
+                )
+                train_sums["amp_supervision_weight"] += float(
+                    loss_diag["amp_supervision_weight"].item()
+                )
+                train_sums["amp_supervision_target_norm_mean"] += float(
+                    loss_diag["amp_supervision_target_norm_mean"].item()
+                )
+                train_sums["amp_supervision_error_norm_mean"] += float(
+                    loss_diag["amp_supervision_error_norm_mean"].item()
+                )
                 train_sums["freq_kl_beta_anneal"] += float(
                     loss_diag["freq_kl_beta_anneal"].item()
                 )
@@ -881,6 +901,18 @@ def main():
                     writer,
                     "train_step/freq_prior_reg",
                     loss_diag["freq_prior_reg"].item(),
+                    total_steps,
+                )
+                _log_scalar(
+                    writer,
+                    "train_step/amp_supervision_loss",
+                    loss_diag["amp_supervision_loss"].item(),
+                    total_steps,
+                )
+                _log_scalar(
+                    writer,
+                    "train_step/amp_supervision_error_norm_mean",
+                    loss_diag["amp_supervision_error_norm_mean"].item(),
                     total_steps,
                 )
                 if grad_norm is not None and torch.isfinite(grad_norm):

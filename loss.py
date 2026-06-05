@@ -1413,11 +1413,48 @@ def compute_static_global_objective(
         )
     )
     amp_kl_weighted = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
-    loss_unscaled = recon_loss + beta_freq * freq_kl_weighted + beta_amp * amp_kl_weighted
+    amp_sup_cfg = loss_cfg.get("amp_supervision", {})
+    amp_sup_enabled = bool(amp_sup_cfg.get("enabled", False))
+    amp_sup_weight = float(amp_sup_cfg.get("weight", 1.0))
+    amp_sup_loss_raw = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
+    amp_sup_target_norm = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
+    amp_sup_error_norm = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
+    if amp_sup_enabled:
+        if amp_sup_cfg.get("target", "ls_at_mu_f") != "ls_at_mu_f":
+            raise ValueError(
+                "loss.amp_supervision.target currently only supports 'ls_at_mu_f'"
+            )
+        if "c_nn" not in model_outputs:
+            raise KeyError("amp_supervision requires model_outputs['c_nn']")
+        _, _, amp_sup_target, _ = model.solve_amplitudes_ls(
+            y_complex=y_complex,
+            f=mu_f,
+            t=t_global,
+            ridge_lambda=model.ls_ridge,
+            return_condition=True,
+        )
+        if bool(amp_sup_cfg.get("stop_gradient_target", True)):
+            amp_sup_target = amp_sup_target.detach()
+        amp_sup_error = model_outputs["c_nn"] - amp_sup_target
+        amp_sup_loss_raw = torch.mean(torch.abs(amp_sup_error) ** 2)
+        amp_sup_target_norm = torch.linalg.norm(amp_sup_target, dim=-1).mean()
+        amp_sup_error_norm = torch.linalg.norm(amp_sup_error, dim=-1).mean()
+    amp_sup_weighted = amp_sup_weight * amp_sup_loss_raw
+    loss_unscaled = (
+        recon_loss
+        + amp_sup_weighted
+        + beta_freq * freq_kl_weighted
+        + beta_amp * amp_kl_weighted
+    )
     objective_num_points = max(int(num_windows * seq_len), 1)
+    scale_modes = {
+        "static_global_strict_elbo",
+        "static_global_nnamp",
+        "static_global_bayesian_nnamp",
+    }
     optimization_loss_scale = (
         1.0 / float(objective_num_points)
-        if mode == "static_global_strict_elbo"
+        if mode in scale_modes and not normalize_by_num_points
         else 1.0
     )
     loss = loss_unscaled * optimization_loss_scale
@@ -1436,6 +1473,15 @@ def compute_static_global_objective(
         "freq_kl_raw": freq_kl_raw.detach(),
         "amp_kl": amp_kl_weighted.detach(),
         "amp_kl_raw": amp_kl_raw.detach(),
+        "amp_supervision_loss": amp_sup_weighted.detach(),
+        "amp_supervision_loss_raw": amp_sup_loss_raw.detach(),
+        "amp_supervision_weight": torch.as_tensor(
+            amp_sup_weight,
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
+        "amp_supervision_target_norm_mean": amp_sup_target_norm.detach(),
+        "amp_supervision_error_norm_mean": amp_sup_error_norm.detach(),
         "beta_amp": torch.as_tensor(
             beta_amp,
             device=mu_f.device,
