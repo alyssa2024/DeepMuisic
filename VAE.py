@@ -422,11 +422,17 @@ class PhysicalHarmonicVAE(nn.Module):
         invalid_rate = invalid_precision.float().mean()
 
         if self.poe_clamp_invalid_precision:
-            min_precision = 1.0 / self.encoder.freq_half.to(
-                device=device,
-                dtype=dtype,
-            ).view(1, num_harmonics).pow(2).clamp_min(eps)
-            precision_g = torch.maximum(precision_raw, min_precision)
+            prior_eta_2d = prec0_2d * prior_mu_2d
+            precision_g = torch.where(
+                invalid_precision,
+                prec0_2d.expand_as(precision_raw),
+                precision_raw,
+            )
+            eta_g = torch.where(
+                invalid_precision,
+                prior_eta_2d.expand_as(eta_raw),
+                eta_raw,
+            )
         else:
             if torch.any(invalid_precision):
                 raise RuntimeError(
@@ -434,11 +440,12 @@ class PhysicalHarmonicVAE(nn.Module):
                     "Increase local posterior std initialization or use evidence PoE."
                 )
             precision_g = precision_raw
+            eta_g = eta_raw
 
         precision_safe = precision_g.clamp_min(eps)
         var_g = (1.0 / precision_safe).clamp_min(eps)
         std_g = torch.sqrt(var_g)
-        mu_g = eta_raw / precision_safe
+        mu_g = eta_g / precision_safe
 
         lower = self.encoder.freq_lower.to(device=device, dtype=dtype).view(
             1,
@@ -457,6 +464,15 @@ class PhysicalHarmonicVAE(nn.Module):
             "poe_precision_raw": precision_raw,
             "poe_precision": precision_g,
             "poe_invalid_precision_rate": invalid_rate,
+            "poe_precision_raw_min": precision_raw.min(),
+            "poe_precision_raw_mean": precision_raw.mean(),
+            "poe_eta_raw_mean": eta_raw.mean(),
+            "poe_mu_before_clamp_mean_abs_err_to_prior": (
+                (eta_raw / precision_raw.clamp_min(eps) - prior_mu_2d).abs().mean()
+            ),
+            "poe_mu_after_clamp_mean_abs_err_to_prior": (
+                (mu_g - prior_mu_2d).abs().mean()
+            ),
             "poe_window_std_mean": std_win.mean(),
             "poe_window_std_p95": torch.quantile(std_win.reshape(-1), 0.95),
             "poe_global_std_mean": std_g.mean(),

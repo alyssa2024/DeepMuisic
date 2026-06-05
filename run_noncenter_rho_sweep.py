@@ -78,6 +78,16 @@ def summarize_run(rho, rho_k, run_dir, metrics):
             "",
         ),
         "poe_invalid_precision_rate": metrics.get("poe_invalid_precision_rate", ""),
+        "poe_precision_raw_min": metrics.get("poe_precision_raw_min", ""),
+        "poe_precision_raw_mean": metrics.get("poe_precision_raw_mean", ""),
+        "poe_mu_before_clamp_mean_abs_err_to_prior": metrics.get(
+            "poe_mu_before_clamp_mean_abs_err_to_prior",
+            "",
+        ),
+        "poe_mu_after_clamp_mean_abs_err_to_prior": metrics.get(
+            "poe_mu_after_clamp_mean_abs_err_to_prior",
+            "",
+        ),
         "poe_window_std_mean": metrics.get("poe_window_std_mean", ""),
         "poe_global_std_mean": metrics.get("poe_global_std_mean", ""),
         "run_dir": run_dir,

@@ -889,6 +889,11 @@ def compute_static_global_objective(
         ).detach()
     for key in (
         "poe_invalid_precision_rate",
+        "poe_precision_raw_min",
+        "poe_precision_raw_mean",
+        "poe_eta_raw_mean",
+        "poe_mu_before_clamp_mean_abs_err_to_prior",
+        "poe_mu_after_clamp_mean_abs_err_to_prior",
         "poe_window_std_mean",
         "poe_window_std_p95",
         "poe_global_std_mean",
