@@ -385,19 +385,24 @@ def compute_sequence_posterior_recon_loss(
     t0=None,
     signal_cfg=None,
     amp_prior_cfg=None,
+    use_posterior_sampling=True,
+    normalize_by_num_points=False,
     eps=1e-8,
 ):
     """
     Reconstruct each sequence from sequence-level posterior frequency samples.
     """
     if f_samples is None:
-        f_samples = sample_sequence_frequencies(
-            mu_f=mu_f,
-            std_f=std_f,
-            num_samples=sequence_posterior_samples,
-            freq_lower=model.encoder.freq_lower,
-            freq_upper=model.encoder.freq_upper,
-        )
+        if use_posterior_sampling:
+            f_samples = sample_sequence_frequencies(
+                mu_f=mu_f,
+                std_f=std_f,
+                num_samples=sequence_posterior_samples,
+                freq_lower=model.encoder.freq_lower,
+                freq_upper=model.encoder.freq_upper,
+            )
+        else:
+            f_samples = mu_f.unsqueeze(0)
     else:
         if f_samples.ndim != 3:
             raise ValueError(f"f_samples must be [S, B, K], got {f_samples.shape}")
@@ -541,8 +546,12 @@ def compute_sequence_posterior_recon_loss(
     recon_nll_core_per_sequence = (
         sqerr / noise_var.view(1, -1, 1)
     ).sum(dim=-1)
+    if normalize_by_num_points:
+        recon_nll_core_per_sequence = recon_nll_core_per_sequence / y_complex.shape[1]
     recon_nll_core = recon_nll_core_per_sequence.mean()
     log_const = y_complex.shape[1] * torch.log(math.pi * noise_var).mean()
+    if normalize_by_num_points:
+        log_const = log_const / y_complex.shape[1]
     recon_nll_full = recon_nll_core + log_const
 
     zero = torch.zeros((), device=y_complex.device, dtype=sqerr.dtype)
@@ -671,6 +680,43 @@ def _static_global_amp_prior_cfg(loss_cfg):
     return mode, amp_prior_cfg
 
 
+def _slice_windows_for_objective(
+    target_windows,
+    t_windows_abs,
+    objective_cycles=None,
+    short_num_cycles=None,
+    segment_mode="prefix",
+):
+    """
+    Slice parent windows according to the current objective length.
+    """
+    if objective_cycles is None:
+        return target_windows, t_windows_abs, target_windows.shape[1]
+
+    if short_num_cycles is None or int(short_num_cycles) <= 0:
+        raise ValueError(
+            "short_num_cycles must be provided and positive when objective_cycles is used"
+        )
+    if segment_mode != "prefix":
+        raise ValueError(
+            "Only segment_mode='prefix' is supported in the first implementation, "
+            f"got {segment_mode!r}"
+        )
+
+    num_windows = target_windows.shape[1]
+    num_objective_windows = max(
+        1,
+        int(math.ceil(int(objective_cycles) / int(short_num_cycles))),
+    )
+    num_objective_windows = min(num_objective_windows, num_windows)
+
+    return (
+        target_windows[:, :num_objective_windows],
+        t_windows_abs[:, :num_objective_windows],
+        num_objective_windows,
+    )
+
+
 def compute_frequency_kl(mu_f, std_f, model, loss_cfg):
     kl_cfg = loss_cfg.get("kl", {})
     kl_type = kl_cfg.get("type", "trunc_normal_to_trunc_normal")
@@ -711,6 +757,9 @@ def compute_static_global_objective(
     signal_cfg=None,
     dataset_state=None,
     global_step=None,
+    objective_cycles=None,
+    short_num_cycles=None,
+    segment_mode="prefix",
 ):
     """
     Strict static global-latent objective for parent long sequences.
@@ -736,6 +785,14 @@ def compute_static_global_objective(
     mu_f = model_outputs["mu_f"]
     std_f = model_outputs["std_f"]
 
+    target_windows, t_windows_abs, num_objective_windows = _slice_windows_for_objective(
+        target_windows=target_windows,
+        t_windows_abs=t_windows_abs,
+        objective_cycles=objective_cycles,
+        short_num_cycles=short_num_cycles,
+        segment_mode=segment_mode,
+    )
+
     batch_size, num_windows, seq_len, _ = target_windows.shape
     t0 = t_windows_abs[:, 0, 0]
     t_global = (t_windows_abs - t0.view(batch_size, 1, 1)).reshape(
@@ -750,6 +807,8 @@ def compute_static_global_objective(
     rec_cfg = loss_cfg.get("reconstruction", {})
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
     include_log_const = bool(rec_cfg.get("include_log_const", False))
+    use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
+    normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
     recon_loss, recon_diag = compute_sequence_posterior_recon_loss(
         y_complex=y_complex,
         t=t_global,
@@ -764,6 +823,8 @@ def compute_static_global_objective(
         t0=t0,
         signal_cfg=signal_cfg,
         amp_prior_cfg=amp_prior_cfg,
+        use_posterior_sampling=use_posterior_sampling,
+        normalize_by_num_points=normalize_by_num_points,
     )
 
     freq_kl_per_item = compute_frequency_kl(
@@ -799,6 +860,21 @@ def compute_static_global_objective(
         "posterior_std_hz_mean": std_f.mean().detach(),
         "freq_sample_outside_rate": outside_rate.detach(),
         "static_global_mode": mode,
+        "objective_cycles": torch.as_tensor(
+            -1 if objective_cycles is None else int(objective_cycles),
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
+        "objective_num_windows": torch.as_tensor(
+            int(num_objective_windows),
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
+        "objective_num_points": torch.as_tensor(
+            int(num_windows * seq_len),
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
     }
 
     if "log_rho2_f" in model_outputs:

@@ -73,6 +73,8 @@ def evaluate_model(
     )
     rec_cfg = loss_cfg.get("reconstruction", {})
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
+    use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
+    normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
 
     total_sequences = 0
     total_freq_elements = 0
@@ -242,6 +244,8 @@ def evaluate_model(
                 t0=t0.squeeze(1),
                 signal_cfg=signal_cfg,
                 amp_prior_cfg=amp_prior_cfg,
+                use_posterior_sampling=use_posterior_sampling,
+                normalize_by_num_points=normalize_by_num_points,
             )
             recon_mse_sampled = sampled_diag["recon_mse_sampled"]
             recon_nll_sampled = sampled_diag["recon_nll"]

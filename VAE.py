@@ -40,8 +40,15 @@ class PhysicalHarmonicVAE(nn.Module):
         if f.dim() != 2:
             raise ValueError(f"f must have shape [B, K], got {f.shape}")
 
-        phase = 2.0 * torch.pi * t.unsqueeze(-1) * f.unsqueeze(1)
-        return torch.polar(torch.ones_like(phase), phase)
+        # Long sequences produce large phases. Compute in float64 and reduce
+        # modulo 2pi before evaluating exp(j phase).
+        t64 = t.to(torch.float64)
+        f64 = f.to(torch.float64)
+        phase64 = 2.0 * math.pi * t64.unsqueeze(-1) * f64.unsqueeze(1)
+        phase64 = torch.remainder(phase64, 2.0 * math.pi)
+
+        phi64 = torch.polar(torch.ones_like(phase64), phase64)
+        return phi64.to(torch.complex64)
 
     def solve_amplitudes_ls(
         self,

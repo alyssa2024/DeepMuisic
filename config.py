@@ -102,14 +102,15 @@ CONFIG = {
         "ls_ridge": 1e-5,
     },
     "loss": {
-        "beta_freq": 1e-4,
+        "beta_freq": 0.0,
         "reconstruction": {
             "type": "complex_gaussian_global_nll",
-            "include_log_const": True,
-            "use_posterior_sampling": True,
-            "sequence_posterior_samples": 2,
-            "sample_at_train": True,
+            "include_log_const": False,
+            "use_posterior_sampling": False,
+            "sequence_posterior_samples": 1,
+            "sample_at_train": False,
             "eval_at_mean": True,
+            "normalize_by_num_points": True,
         },
         "amplitude_prior": {
             "enabled": False,
@@ -120,7 +121,7 @@ CONFIG = {
             "min_tau2_norm": 1e-10,
         },
         "kl": {
-            "enabled": True,
+            "enabled": False,
             "type": "trunc_normal_to_trunc_normal",
             "warmup_steps": 10000,
             "reuse_reconstruction_samples": False,
@@ -138,8 +139,16 @@ CONFIG = {
         },
     },
     "training": {
-        "epochs": 150,
+        "epochs": 190,
         "lr": 1e-4,
+        "objective_curriculum": {
+            "enabled": True,
+            "cycles": [4, 8, 16, 32, 64, 256, 1000, 10000],
+            "epochs_per_stage": [20, 20, 20, 20, 20, 20, 30, 40],
+            "lr_per_stage": [1e-4, 1e-4, 1e-4, 5e-5, 3e-5, 1e-5, 3e-6, 1e-6],
+            "segment_mode": "prefix",
+            "apply_to_encoder": True,
+        },
         "lr_schedule": {
             "type": "warmup_cosine",
             "warmup_steps": 1000,
@@ -153,8 +162,8 @@ CONFIG = {
             "enabled": True,
             "monitor": "recon_mse_mean",
             "mode": "min",
-            "patience": 3,
-            "min_delta": 1e-6,
+            "patience": 5,
+            "min_delta": 1e-5,
         },
     },
     "eval": {

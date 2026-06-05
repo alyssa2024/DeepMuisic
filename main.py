@@ -81,7 +81,7 @@ def _resolve_lr_schedule(train_cfg, steps_per_epoch):
     if warmup_steps < 0:
         raise ValueError("training.lr_schedule.warmup_steps must be non-negative")
     if warmup_steps >= total_steps:
-        raise ValueError("training.lr_schedule.warmup_steps must be smaller than total_steps")
+        warmup_steps = max(total_steps - 1, 0)
     if min_lr < 0:
         raise ValueError("training.lr_schedule.min_lr must be non-negative")
     return schedule_type, total_steps, warmup_steps, min_lr
@@ -100,6 +100,97 @@ def _compute_learning_rate(base_lr, step, schedule_type, total_steps, warmup_ste
     progress = (step - warmup_steps) / cosine_steps
     cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
     return min_lr + (base_lr - min_lr) * cosine_decay
+
+
+def _resolve_objective_curriculum(train_cfg):
+    cfg = train_cfg.get("objective_curriculum", {})
+    if not bool(cfg.get("enabled", False)):
+        return {
+            "enabled": False,
+            "cycles": None,
+            "epochs_per_stage": None,
+            "segment_mode": "prefix",
+            "apply_to_encoder": False,
+        }
+
+    cycles = [int(x) for x in cfg.get("cycles", [])]
+    epochs_per_stage = [int(x) for x in cfg.get("epochs_per_stage", [])]
+    lr_per_stage_raw = cfg.get("lr_per_stage", None)
+    lr_per_stage = (
+        None
+        if lr_per_stage_raw is None
+        else [float(x) for x in lr_per_stage_raw]
+    )
+
+    if not cycles:
+        raise ValueError("training.objective_curriculum.cycles must be non-empty")
+    if len(epochs_per_stage) != len(cycles):
+        raise ValueError(
+            "training.objective_curriculum.epochs_per_stage must have same length as cycles"
+        )
+    if lr_per_stage is not None and len(lr_per_stage) != len(cycles):
+        raise ValueError(
+            "training.objective_curriculum.lr_per_stage must have same length as cycles"
+        )
+    if any(c <= 0 for c in cycles):
+        raise ValueError("objective curriculum cycles must be positive")
+    if any(e <= 0 for e in epochs_per_stage):
+        raise ValueError("objective curriculum epochs_per_stage must be positive")
+    if lr_per_stage is not None and any(lr <= 0.0 for lr in lr_per_stage):
+        raise ValueError("objective curriculum lr_per_stage values must be positive")
+
+    segment_mode = cfg.get("segment_mode", "prefix")
+    if segment_mode != "prefix":
+        raise ValueError(
+            "Only training.objective_curriculum.segment_mode='prefix' is supported, "
+            f"got {segment_mode!r}"
+        )
+
+    return {
+        "enabled": True,
+        "cycles": cycles,
+        "epochs_per_stage": epochs_per_stage,
+        "lr_per_stage": lr_per_stage,
+        "segment_mode": segment_mode,
+        "apply_to_encoder": bool(cfg.get("apply_to_encoder", True)),
+    }
+
+
+def _objective_cycles_for_epoch(curriculum_cfg, epoch):
+    if not curriculum_cfg["enabled"]:
+        return None, -1
+
+    remaining = int(epoch)
+    for idx, (cycles, n_epochs) in enumerate(
+        zip(curriculum_cfg["cycles"], curriculum_cfg["epochs_per_stage"])
+    ):
+        if remaining < n_epochs:
+            return int(cycles), int(idx)
+        remaining -= n_epochs
+
+    return int(curriculum_cfg["cycles"][-1]), len(curriculum_cfg["cycles"]) - 1
+
+
+def _num_windows_for_objective(objective_cycles, short_num_cycles, total_windows):
+    if objective_cycles is None:
+        return total_windows
+    short_num_cycles = int(short_num_cycles)
+    if short_num_cycles <= 0:
+        raise ValueError("short_num_cycles must be positive")
+    return min(
+        int(total_windows),
+        max(1, int(math.ceil(int(objective_cycles) / short_num_cycles))),
+    )
+
+
+def _base_lr_for_curriculum_stage(curriculum_cfg, curriculum_stage, default_lr):
+    lr_per_stage = curriculum_cfg.get("lr_per_stage")
+    if not curriculum_cfg["enabled"] or lr_per_stage is None:
+        return float(default_lr)
+    if curriculum_stage < 0:
+        return float(default_lr)
+    stage = min(int(curriculum_stage), len(lr_per_stage) - 1)
+    return float(lr_per_stage[stage])
 
 
 def _set_optimizer_lr(optimizer, lr):
@@ -468,6 +559,26 @@ def main():
     ).to(device)
     base_lr = float(train_cfg["lr"])
     optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
+    curriculum_cfg = _resolve_objective_curriculum(train_cfg)
+    if curriculum_cfg["enabled"]:
+        total_curriculum_epochs = sum(curriculum_cfg["epochs_per_stage"])
+        if int(train_cfg["epochs"]) < total_curriculum_epochs:
+            raise ValueError(
+                f"training.epochs={train_cfg['epochs']} is smaller than "
+                f"objective curriculum total epochs={total_curriculum_epochs}"
+            )
+        print(
+            "Objective curriculum: "
+            f"cycles={curriculum_cfg['cycles']}, "
+            f"epochs_per_stage={curriculum_cfg['epochs_per_stage']}, "
+            f"lr_per_stage={curriculum_cfg['lr_per_stage']}, "
+            f"segment_mode={curriculum_cfg['segment_mode']}, "
+            f"apply_to_encoder={curriculum_cfg['apply_to_encoder']}"
+        )
+    short_num_cycles = int(train_dataset_cfg.get(
+        "sequence_num_cycles",
+        data_cfg["num_cycles"],
+    ))
     (
         lr_schedule_type,
         lr_total_steps,
@@ -542,6 +653,10 @@ def main():
     try:
         for epoch in range(start_epoch, train_cfg["epochs"]):
             model.train()
+            objective_cycles, curriculum_stage = _objective_cycles_for_epoch(
+                curriculum_cfg,
+                epoch,
+            )
             train_sums = {
                 "loss": 0.0,
                 "recon": 0.0,
@@ -571,6 +686,10 @@ def main():
                 "amp_post_var_trace": 0.0,
                 "amp_post_std_mean": 0.0,
                 "amp_uncertainty_to_prior_ratio_mean": 0.0,
+                "objective_cycles": 0.0,
+                "objective_stage": 0.0,
+                "objective_num_windows": 0.0,
+                "objective_num_points": 0.0,
             }
             train_batches = 0
 
@@ -584,11 +703,25 @@ def main():
                 amp_scale = batch["amp_scale"].to(device)
                 dataset_state = extract_dataset_state(batch, device)
 
+                objective_num_windows = _num_windows_for_objective(
+                    objective_cycles=objective_cycles,
+                    short_num_cycles=short_num_cycles,
+                    total_windows=x_batch.shape[1],
+                )
+                if curriculum_cfg["enabled"] and curriculum_cfg["apply_to_encoder"]:
+                    x_model = x_batch[:, :objective_num_windows]
+                    probe_model = probe_ids[:, :objective_num_windows]
+                    window_start_model = window_start_cycle[:, :objective_num_windows]
+                else:
+                    x_model = x_batch
+                    probe_model = probe_ids
+                    window_start_model = window_start_cycle
+
                 optimizer.zero_grad()
                 model_outputs = model.forward_global(
-                    x_batch,
-                    probe_ids_windows=probe_ids,
-                    window_start_cycle=window_start_cycle,
+                    x_model,
+                    probe_ids_windows=probe_model,
+                    window_start_cycle=window_start_model,
                 )
                 loss, recon, freq_kl, loss_diag = compute_static_global_objective(
                     target_windows=target_batch,
@@ -601,6 +734,9 @@ def main():
                     signal_cfg=signal_cfg,
                     dataset_state=dataset_state,
                     global_step=total_steps + 1,
+                    objective_cycles=objective_cycles,
+                    short_num_cycles=short_num_cycles,
+                    segment_mode=curriculum_cfg["segment_mode"],
                 )
 
                 if not torch.isfinite(loss):
@@ -621,8 +757,13 @@ def main():
                 else:
                     grad_norm = None
 
+                stage_base_lr = _base_lr_for_curriculum_stage(
+                    curriculum_cfg=curriculum_cfg,
+                    curriculum_stage=curriculum_stage,
+                    default_lr=base_lr,
+                )
                 step_lr = _compute_learning_rate(
-                    base_lr=base_lr,
+                    base_lr=stage_base_lr,
                     step=total_steps + 1,
                     schedule_type=lr_schedule_type,
                     total_steps=lr_total_steps,
@@ -665,8 +806,12 @@ def main():
                     "amp_post_var_trace",
                     "amp_post_std_mean",
                     "amp_uncertainty_to_prior_ratio_mean",
+                    "objective_cycles",
+                    "objective_num_windows",
+                    "objective_num_points",
                 ):
                     train_sums[key] += float(loss_diag[key].item())
+                train_sums["objective_stage"] += float(curriculum_stage)
                 for key, value in loss_diag.items():
                     if not key.startswith("data_state/"):
                         continue
@@ -711,6 +856,18 @@ def main():
                 if grad_norm is not None and torch.isfinite(grad_norm):
                     _log_scalar(writer, "train_step/grad_norm", grad_norm.item(), total_steps)
                 _log_scalar(writer, "train_step/lr", step_lr, total_steps)
+                _log_scalar(
+                    writer,
+                    "train_step/objective_cycles",
+                    loss_diag["objective_cycles"].item(),
+                    total_steps,
+                )
+                _log_scalar(
+                    writer,
+                    "train_step/objective_num_windows",
+                    loss_diag["objective_num_windows"].item(),
+                    total_steps,
+                )
 
             if train_batches == 0:
                 print(f"epoch={epoch:04d} no valid training batches")
@@ -730,6 +887,9 @@ def main():
                 f"train_loss={train_means['loss']:.6f} "
                 f"train_recon_nll={train_means['recon']:.6f} "
                 f"train_recon_mse={train_means['recon_mse_sampled']:.6f} "
+                f"obj_cycles={train_means['objective_cycles']:.0f} "
+                f"obj_stage={train_means['objective_stage']:.0f} "
+                f"obj_windows={train_means['objective_num_windows']:.0f} "
                 f"freq_kl={train_means['freq_kl']:.6f} "
                 f"freq_kl_raw={train_means['freq_kl_raw']:.6f} "
                 f"kl_anneal={train_means['freq_kl_beta_anneal']:.4f} "
@@ -895,8 +1055,73 @@ def main():
                 )
                 print(f"Saved checkpoint: {latest_ckpt}")
 
+        final_eval_checkpoint = "last"
+        if best_ckpt_path is not None and os.path.exists(best_ckpt_path):
+            checkpoint = torch.load(best_ckpt_path, map_location=device)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            final_eval_checkpoint = "best"
+            best_checkpoint_epoch = int(checkpoint.get("epoch", -1)) + 1
+            print(f"Loaded best checkpoint for final evaluation: {best_ckpt_path}")
+            final_best_ckpt = os.path.join(ckpt_dir, "final_best.pt")
+            save_checkpoint(
+                path=final_best_ckpt,
+                model=model,
+                optimizer=optimizer,
+                epoch=best_checkpoint_epoch - 1,
+                total_steps=total_steps,
+                nonfinite_steps=nonfinite_steps,
+                grad_clip_triggered_steps=grad_clip_triggered_steps,
+                epoch_to_target=epoch_to_target,
+            )
+            print(f"Saved final best checkpoint: {final_best_ckpt}")
+
+            best_final_metrics = evaluate_model(
+                model=model,
+                dataloader=val_loader,
+                device=device,
+                loss_cfg=loss_cfg,
+                signal_cfg=signal_cfg,
+                dense_factor=dense_factor,
+            )
+            final_metrics = dict(best_final_metrics)
+            final_metrics["epoch"] = best_epoch if best_epoch is not None else best_checkpoint_epoch
+            final_metrics["total_steps"] = total_steps
+            final_metrics["seed"] = seed
+            final_metrics["epoch_to_target"] = epoch_to_target
+            final_metrics["final_eval_checkpoint"] = final_eval_checkpoint
+            final_metrics["best_checkpoint_path"] = best_ckpt_path
+            final_metrics["final_best_checkpoint_path"] = final_best_ckpt
+            if best_metrics is None:
+                best_metrics = dict(final_metrics)
+                best_epoch = final_metrics["epoch"]
+
+            metrics_path = os.path.join(run_dir, "metrics.json")
+            metrics_to_save = _build_metrics_payload(
+                last_metrics=final_metrics,
+                best_metrics=best_metrics,
+                best_epoch=best_epoch,
+                early_stopped=early_stopped,
+                early_stop_epoch=early_stop_epoch,
+                early_patience=early_patience,
+                early_monitor=early_monitor,
+            )
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(metrics_to_save, f, indent=2)
+            print(
+                "[FINAL] "
+                f"checkpoint={final_eval_checkpoint} "
+                f"epoch={final_metrics['epoch']} "
+                f"loss={final_metrics['loss']:.6f} "
+                f"recon_mse_mean={final_metrics['recon_mse_mean']:.6f} "
+                f"freq_rmse_hz_mean={final_metrics['freq_rmse_hz_mean']:.4f} "
+                f"amp_mape={final_metrics['amp_mape_mean']:.4f}"
+            )
+            print(f"Saved final best metrics: {metrics_path}")
+        elif final_metrics is not None:
+            final_metrics["final_eval_checkpoint"] = final_eval_checkpoint
+
         if bool(eval_cfg.get("evaluate_test_dataset", False)) and test_loader is not None:
-            eval_checkpoint = "final"
+            eval_checkpoint = final_eval_checkpoint
             test_checkpoint = eval_cfg.get("test_checkpoint", "best")
             if (
                 test_checkpoint == "best"

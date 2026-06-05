@@ -192,6 +192,8 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
 
         self._fc_f_mu = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
         self._fc_f_logvar = torch.nn.Linear(hidden_dim_dense, self.num_harmonics)
+        torch.nn.init.zeros_(self._fc_f_mu.weight)
+        torch.nn.init.zeros_(self._fc_f_mu.bias)
 
         self._device = device
         self._causal_mask = causal_mask
