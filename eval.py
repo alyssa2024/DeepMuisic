@@ -99,6 +99,7 @@ def evaluate_model(
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
     include_log_const = bool(rec_cfg.get("include_log_const", False))
+    recon_weight = float(loss_cfg.get("reconstruction_weight", 1.0))
     amp_warmup_cfg = loss_cfg.get("amplitude_warmup", {})
     amp_warmup_enabled = bool(amp_warmup_cfg.get("enabled", False))
     amp_freq_source = amp_warmup_cfg.get("frequency_source", "mu_f")
@@ -515,11 +516,20 @@ def evaluate_model(
                 if "c_nn" not in outputs:
                     raise KeyError("amp_supervision requires model outputs['c_nn']")
                 amp_sup_error = outputs["c_nn"] - c_ls_pred
-                amp_sup_loss_raw = torch.mean(torch.abs(amp_sup_error) ** 2)
+                err2 = torch.sum(torch.abs(amp_sup_error) ** 2, dim=-1)
+                ref2 = torch.sum(torch.abs(c_ls_pred.detach()) ** 2, dim=-1).clamp_min(
+                    1e-8
+                )
+                amp_sup_loss_raw = (err2 / ref2).mean()
                 amp_sup_target_norm = torch.linalg.norm(c_ls_pred, dim=-1).mean()
                 amp_sup_error_norm = torch.linalg.norm(amp_sup_error, dim=-1).mean()
             amp_sup_loss = amp_sup_weight * amp_sup_loss_raw
-            loss = sampled_recon_loss + amp_sup_loss + beta_freq * freq_kl + beta_amp * amp_kl
+            loss = (
+                recon_weight * sampled_recon_loss
+                + amp_sup_loss
+                + beta_freq * freq_kl
+                + beta_amp * amp_kl
+            )
             objective_num_points = max(int(num_windows * seq_len), 1)
             scale_modes = {
                 "static_global_strict_elbo",

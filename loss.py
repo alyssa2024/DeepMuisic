@@ -1452,6 +1452,7 @@ def compute_static_global_objective(
         freq_upper=model.encoder.freq_upper,
     )
 
+    recon_weight = float(loss_cfg.get("reconstruction_weight", 1.0))
     beta_freq = float(loss_cfg.get("beta_freq", 1.0))
     beta_anneal = compute_beta_anneal(loss_cfg=loss_cfg, step=global_step)
     freq_kl_weighted = beta_anneal * freq_kl_raw
@@ -1487,12 +1488,16 @@ def compute_static_global_objective(
         if bool(amp_sup_cfg.get("stop_gradient_target", True)):
             amp_sup_target = amp_sup_target.detach()
         amp_sup_error = model_outputs["c_nn"] - amp_sup_target
-        amp_sup_loss_raw = torch.mean(torch.abs(amp_sup_error) ** 2)
+        err2 = torch.sum(torch.abs(amp_sup_error) ** 2, dim=-1)
+        ref2 = torch.sum(torch.abs(amp_sup_target.detach()) ** 2, dim=-1).clamp_min(
+            eps
+        )
+        amp_sup_loss_raw = (err2 / ref2).mean()
         amp_sup_target_norm = torch.linalg.norm(amp_sup_target, dim=-1).mean()
         amp_sup_error_norm = torch.linalg.norm(amp_sup_error, dim=-1).mean()
     amp_sup_weighted = amp_sup_weight * amp_sup_loss_raw
     loss_unscaled = (
-        recon_loss
+        recon_weight * recon_loss
         + amp_sup_weighted
         + beta_freq * freq_kl_weighted
         + beta_amp * amp_kl_weighted
@@ -1519,6 +1524,11 @@ def compute_static_global_objective(
             dtype=mu_f.dtype,
         ).detach(),
         "recon_loss": recon_loss.detach(),
+        "reconstruction_weight": torch.as_tensor(
+            recon_weight,
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
         "recon_loss_per_point": (recon_loss * optimization_loss_scale).detach(),
         "freq_kl": freq_kl_weighted.detach(),
         "freq_kl_raw": freq_kl_raw.detach(),

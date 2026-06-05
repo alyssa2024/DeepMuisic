@@ -61,6 +61,24 @@ def _append_history(history, key, step, value):
     history.setdefault(key, []).append((int(step), float(value)))
 
 
+def _param_norm(params):
+    vals = [p.detach().flatten() for p in params]
+    if not vals:
+        return 0.0
+    return torch.linalg.norm(torch.cat(vals)).item()
+
+
+def _grad_norm(params):
+    vals = [
+        p.grad.detach().flatten()
+        for p in params
+        if p.grad is not None
+    ]
+    if not vals:
+        return 0.0
+    return torch.linalg.norm(torch.cat(vals)).item()
+
+
 def _resolve_lr_schedule(train_cfg, steps_per_epoch):
     schedule_cfg = train_cfg.get("lr_schedule", {})
     schedule_type = schedule_cfg.get("type", "warmup_cosine")
@@ -559,19 +577,31 @@ def main():
         amplitude_nn_cfg=CONFIG.get("amplitude_nn", {}),
     ).to(device)
     base_lr = float(train_cfg["lr"])
-    if bool(train_cfg.get("freeze_encoder_train_amp_head_only", False)):
+    amp_head_only = bool(train_cfg.get("freeze_encoder_train_amp_head_only", False))
+    amp_head_train_mode = train_cfg.get("amp_head_train_mode", "head")
+    if amp_head_only:
+        if amp_head_train_mode not in ("head", "bias_only"):
+            raise ValueError(
+                "training.amp_head_train_mode must be one of "
+                "'head', 'bias_only'; "
+                f"got {amp_head_train_mode!r}"
+            )
         for _, p in model.named_parameters():
             p.requires_grad = False
-        for name, p in model.named_parameters():
-            if name.startswith("amp_head"):
-                p.requires_grad = True
+        if amp_head_train_mode == "bias_only":
+            model.amp_head.bias.requires_grad = True
+        else:
+            for name, p in model.named_parameters():
+                if name.startswith("amp_head"):
+                    p.requires_grad = True
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         if not trainable_params:
             raise ValueError("No trainable parameters selected for amp_head-only training")
         base_lr = float(train_cfg.get("amp_head_lr", 1e-3))
         print(
             "Training only amp_head parameters: "
-            f"lr={base_lr:g}, num_tensors={len(trainable_params)}"
+            f"mode={amp_head_train_mode}, lr={base_lr:g}, "
+            f"num_tensors={len(trainable_params)}"
         )
     else:
         trainable_params = list(model.parameters())
@@ -692,6 +722,11 @@ def main():
                 "amp_supervision_target_norm_mean": 0.0,
                 "amp_supervision_error_norm_mean": 0.0,
                 "amp_supervision_frequency_source_id": 0.0,
+                "amp_head_grad_norm": 0.0,
+                "amp_head_param_norm_before": 0.0,
+                "amp_head_param_norm_after": 0.0,
+                "amp_head_update_norm": 0.0,
+                "c_nn_norm_mean": 0.0,
                 "freq_kl_beta_anneal": 0.0,
                 "freq_prior_reg": 0.0,
                 "posterior_std_hz_mean": 0.0,
@@ -776,6 +811,15 @@ def main():
                     continue
 
                 loss.backward()
+                amp_head_params = list(model.amp_head.parameters())
+                amp_head_grad_norm = _grad_norm(amp_head_params)
+                amp_head_param_norm_before = _param_norm(amp_head_params)
+                c_nn_norm_mean = 0.0
+                if "c_nn" in model_outputs:
+                    c_nn_norm_mean = torch.linalg.norm(
+                        model_outputs["c_nn"],
+                        dim=-1,
+                    ).mean().item()
                 grad_clip_cfg = train_cfg.get("grad_clip", {})
                 if grad_clip_cfg.get("enabled", False):
                     grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -794,6 +838,8 @@ def main():
                     curriculum_stage=curriculum_stage,
                     default_lr=base_lr,
                 )
+                if amp_head_only:
+                    stage_base_lr = base_lr
                 step_lr = _compute_learning_rate(
                     base_lr=stage_base_lr,
                     step=total_steps + 1,
@@ -804,6 +850,10 @@ def main():
                 )
                 _set_optimizer_lr(optimizer, step_lr)
                 optimizer.step()
+                amp_head_param_norm_after = _param_norm(amp_head_params)
+                amp_head_update_norm = abs(
+                    amp_head_param_norm_after - amp_head_param_norm_before
+                )
                 total_steps += 1
                 train_batches += 1
 
@@ -838,6 +888,11 @@ def main():
                 train_sums["amp_supervision_frequency_source_id"] += float(
                     loss_diag["amp_supervision_frequency_source_id"].item()
                 )
+                train_sums["amp_head_grad_norm"] += amp_head_grad_norm
+                train_sums["amp_head_param_norm_before"] += amp_head_param_norm_before
+                train_sums["amp_head_param_norm_after"] += amp_head_param_norm_after
+                train_sums["amp_head_update_norm"] += amp_head_update_norm
+                train_sums["c_nn_norm_mean"] += c_nn_norm_mean
                 train_sums["freq_kl_beta_anneal"] += float(
                     loss_diag["freq_kl_beta_anneal"].item()
                 )
@@ -937,6 +992,14 @@ def main():
                     loss_diag["amp_supervision_error_norm_mean"].item(),
                     total_steps,
                 )
+                _log_scalar(writer, "train_step/amp_head_grad_norm", amp_head_grad_norm, total_steps)
+                _log_scalar(
+                    writer,
+                    "train_step/amp_head_update_norm",
+                    amp_head_update_norm,
+                    total_steps,
+                )
+                _log_scalar(writer, "train_step/c_nn_norm_mean", c_nn_norm_mean, total_steps)
                 if grad_norm is not None and torch.isfinite(grad_norm):
                     _log_scalar(writer, "train_step/grad_norm", grad_norm.item(), total_steps)
                 _log_scalar(writer, "train_step/lr", step_lr, total_steps)

@@ -113,6 +113,7 @@ CONFIG = {
     },
     "loss": {
         "beta_freq": 0.0,
+        "reconstruction_weight": 0.0,
         "reconstruction": {
             "type": "complex_gaussian_global_nll",
             "include_log_const": False,
@@ -148,7 +149,7 @@ CONFIG = {
         "amp_supervision": {
             "enabled": True,
             "target": "ls_at_mu_f",
-            "weight": 300.0,
+            "weight": 30.0,
             "stop_gradient_target": True,
         },
         "elbo": {
@@ -167,7 +168,8 @@ CONFIG = {
         "epochs": 80,
         "lr": 2e-5,
         "freeze_encoder_train_amp_head_only": True,
-        "amp_head_lr": 1e-3,
+        "amp_head_train_mode": "bias_only",
+        "amp_head_lr": 1e-2,
         "objective_curriculum": {
             "enabled": True,
             "cycles": [4, 16, 64, 256, 1024],
@@ -175,6 +177,9 @@ CONFIG = {
             "lr_per_stage": [2e-5, 2e-5, 1e-5, 8e-6, 6e-6],
             "segment_mode": "prefix",
             "apply_to_encoder": True,
+        },
+        "lr_schedule": {
+            "type": "constant",
         },
         "early_stopping": {
             "enabled": False,

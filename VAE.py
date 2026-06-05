@@ -34,6 +34,16 @@ class PhysicalHarmonicVAE(nn.Module):
                 "Only amplitude_nn.output_domain='normalized' is supported, "
                 f"got {self.amplitude_nn_output_domain!r}"
             )
+        self.amplitude_nn_representation = amplitude_nn_cfg.get(
+            "representation",
+            "segment_local",
+        )
+        if self.amplitude_nn_representation not in ("segment_local", "parent_global"):
+            raise ValueError(
+                "amplitude_nn.representation must be one of "
+                "'segment_local', 'parent_global'; "
+                f"got {self.amplitude_nn_representation!r}"
+            )
         self.amplitude_nn_scale = float(amplitude_nn_cfg.get("amp_scale_norm", 1.0))
         feature_dim = int(getattr(encoder, "feature_dim"))
         self.window_pos_proj = nn.Linear(1, feature_dim)
