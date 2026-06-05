@@ -4,6 +4,7 @@ import torch
 
 from batch_utils import extract_dataset_state
 from loss import (
+    _complex_global_to_local,
     _static_global_amp_prior_cfg,
     _select_amp_warmup_frequency,
     build_normalized_amp_prior,
@@ -168,6 +169,7 @@ def evaluate_model(
         "static_global_strict_elbo",
     )
     use_bayesian_nnamp = mode == "static_global_bayesian_nnamp"
+    amp_representation = getattr(model, "amplitude_nn_representation", "segment_local")
     ls_at_pred_recon_mse_sum = 0.0
     ls_at_pred_amp_mape_sum = 0.0
     ls_at_pred_complex_rel_err_sum = 0.0
@@ -249,7 +251,15 @@ def evaluate_model(
                 )
 
             if use_nn_amp:
-                c_mean = outputs["c_nn"]
+                c_model = outputs["c_nn"]
+                if mode == "static_global_nnamp" and amp_representation == "parent_global":
+                    c_mean = _complex_global_to_local(
+                        c_global=c_model,
+                        f_hz=f_amp_eval,
+                        t0=t0.squeeze(1),
+                    )
+                else:
+                    c_mean = c_model
                 amp_real_mean = c_mean.real
                 amp_imag_mean = c_mean.imag
                 cond_mean = torch.zeros(
@@ -364,7 +374,7 @@ def evaluate_model(
                     y_complex=y_complex,
                     t=t_global,
                     mu_f=f_amp_eval if mode == "static_global_nnamp" else mu_f,
-                    c_nn=outputs["c_nn"],
+                    c_nn=c_mean,
                     model=model,
                     noise_var_norm=noise_var_norm,
                     include_log_const=include_log_const,
@@ -421,11 +431,14 @@ def evaluate_model(
             c_pred_local_m = (
                 torch.complex(amp_real_mean, amp_imag_mean) * amp_scale[:, None]
             )
-            c_pred_global_m = _align_local_complex_coeff_to_global_time(
-                local_complex=c_pred_local_m,
-                freq_hz=f_coeff_eval,
-                t0=t0.squeeze(1),
-            )
+            if mode == "static_global_nnamp" and amp_representation == "parent_global":
+                c_pred_global_m = outputs["c_nn"] * amp_scale[:, None]
+            else:
+                c_pred_global_m = _align_local_complex_coeff_to_global_time(
+                    local_complex=c_pred_local_m,
+                    freq_hz=f_coeff_eval,
+                    t0=t0.squeeze(1),
+                )
             c_true_local = _align_true_complex_coeff_to_local_time(
                 true_complex=true_amp,
                 true_freq_hz=true_freq,
@@ -515,7 +528,7 @@ def evaluate_model(
                     )
                 if "c_nn" not in outputs:
                     raise KeyError("amp_supervision requires model outputs['c_nn']")
-                amp_sup_error = outputs["c_nn"] - c_ls_pred
+                amp_sup_error = c_mean - c_ls_pred
                 err2 = torch.sum(torch.abs(amp_sup_error) ** 2, dim=-1)
                 ref2 = torch.sum(torch.abs(c_ls_pred.detach()) ** 2, dim=-1).clamp_min(
                     1e-8

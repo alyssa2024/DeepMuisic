@@ -1232,6 +1232,42 @@ def _select_amp_warmup_frequency(
     return f_amp.detach() if detach else f_amp
 
 
+def _complex_global_to_local(
+    c_global: torch.Tensor,
+    f_hz: torch.Tensor,
+    t0: torch.Tensor,
+) -> torch.Tensor:
+    phase_shift = 2.0 * torch.pi * f_hz * t0[:, None]
+    return c_global * torch.exp(1j * phase_shift)
+
+
+def _complex_local_to_global(
+    c_local: torch.Tensor,
+    f_hz: torch.Tensor,
+    t0: torch.Tensor,
+) -> torch.Tensor:
+    phase_shift = 2.0 * torch.pi * f_hz * t0[:, None]
+    return c_local * torch.exp(-1j * phase_shift)
+
+
+def _select_c_nn_for_local_loss(
+    model_outputs,
+    model,
+    f_amp: torch.Tensor,
+    t0: torch.Tensor,
+) -> torch.Tensor:
+    c_nn = model_outputs["c_nn"]
+    representation = getattr(model, "amplitude_nn_representation", "segment_local")
+    if representation == "segment_local":
+        return c_nn
+    if representation == "parent_global":
+        return _complex_global_to_local(c_global=c_nn, f_hz=f_amp, t0=t0)
+    raise ValueError(
+        "model.amplitude_nn_representation must be one of "
+        f"'segment_local', 'parent_global'; got {representation!r}"
+    )
+
+
 def compute_static_global_objective(
     target_windows,
     t_windows_abs,
@@ -1310,6 +1346,14 @@ def compute_static_global_objective(
         )
     else:
         f_amp = mu_f
+    c_nn_local_for_loss = None
+    if "c_nn" in model_outputs:
+        c_nn_local_for_loss = _select_c_nn_for_local_loss(
+            model_outputs=model_outputs,
+            model=model,
+            f_amp=f_amp,
+            t0=t0,
+        )
     amp_kl_raw = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
     if mode == "static_global_strict_elbo":
         for required_key in ("c_nn", "amp_var_nn"):
@@ -1414,7 +1458,7 @@ def compute_static_global_objective(
             y_complex=y_complex,
             t=t_global,
             mu_f=f_amp,
-            c_nn=model_outputs["c_nn"],
+            c_nn=c_nn_local_for_loss,
             model=model,
             noise_var_norm=noise_var_norm,
             include_log_const=include_log_const,
@@ -1468,6 +1512,7 @@ def compute_static_global_objective(
     amp_sup_cfg = loss_cfg.get("amp_supervision", {})
     amp_sup_enabled = bool(amp_sup_cfg.get("enabled", False))
     amp_sup_weight = float(amp_sup_cfg.get("weight", 1.0))
+    eps = float(amp_sup_cfg.get("eps", 1e-8))
     amp_sup_loss_raw = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
     amp_sup_target_norm = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
     amp_sup_error_norm = torch.zeros((), device=mu_f.device, dtype=mu_f.dtype)
@@ -1487,7 +1532,7 @@ def compute_static_global_objective(
         )
         if bool(amp_sup_cfg.get("stop_gradient_target", True)):
             amp_sup_target = amp_sup_target.detach()
-        amp_sup_error = model_outputs["c_nn"] - amp_sup_target
+        amp_sup_error = c_nn_local_for_loss - amp_sup_target
         err2 = torch.sum(torch.abs(amp_sup_error) ** 2, dim=-1)
         ref2 = torch.sum(torch.abs(amp_sup_target.detach()) ** 2, dim=-1).clamp_min(
             eps
