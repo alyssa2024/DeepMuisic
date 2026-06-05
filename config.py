@@ -101,6 +101,14 @@ CONFIG = {
         },
         "ls_ridge": 1e-5,
     },
+    "amplitude_nn": {
+        "enabled": True,
+        "type": "deterministic_complex",
+        "output_domain": "normalized",
+        "activation": "tanh",
+        "amp_scale_norm": 1.0,
+        "init_scale": 0.05,
+    },
     "loss": {
         "beta_freq": 0.0,
         "reconstruction": {
@@ -127,7 +135,7 @@ CONFIG = {
             "reuse_reconstruction_samples": False,
         },
         "elbo": {
-            "mode": "static_global_ls",
+            "mode": "static_global_nnamp",
             "state_aware": True,
             "strict_long_sequence_elbo": True,
             "global_time_origin": "parent",

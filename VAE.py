@@ -10,12 +10,31 @@ class PhysicalHarmonicVAE(nn.Module):
         encoder: nn.Module,
         ls_ridge: float = 1e-6,
         use_window_position_embedding: bool = True,
+        amplitude_nn_cfg=None,
     ):
         super().__init__()
         self.encoder = encoder
         self.num_harmonics = encoder.output_dim
         self.ls_ridge = float(ls_ridge)
         self.use_window_position_embedding = bool(use_window_position_embedding)
+        amplitude_nn_cfg = amplitude_nn_cfg or {}
+        self.amplitude_nn_enabled = bool(amplitude_nn_cfg.get("enabled", False))
+        self.amplitude_nn_activation = amplitude_nn_cfg.get("activation", "tanh")
+        if self.amplitude_nn_activation != "tanh":
+            raise ValueError(
+                "Only amplitude_nn.activation='tanh' is supported, "
+                f"got {self.amplitude_nn_activation!r}"
+            )
+        self.amplitude_nn_output_domain = amplitude_nn_cfg.get(
+            "output_domain",
+            "normalized",
+        )
+        if self.amplitude_nn_output_domain != "normalized":
+            raise ValueError(
+                "Only amplitude_nn.output_domain='normalized' is supported, "
+                f"got {self.amplitude_nn_output_domain!r}"
+            )
+        self.amplitude_nn_scale = float(amplitude_nn_cfg.get("amp_scale_norm", 1.0))
         feature_dim = int(getattr(encoder, "feature_dim"))
         self.window_pos_proj = nn.Linear(1, feature_dim)
         self.attn_mlp = nn.Sequential(
@@ -23,6 +42,24 @@ class PhysicalHarmonicVAE(nn.Module):
             nn.Tanh(),
             nn.Linear(feature_dim, 1),
         )
+        self.amp_head = nn.Linear(feature_dim, 2 * self.num_harmonics)
+        nn.init.zeros_(self.amp_head.weight)
+        nn.init.normal_(
+            self.amp_head.bias,
+            mean=0.0,
+            std=float(amplitude_nn_cfg.get("init_scale", 0.05)),
+        )
+
+    def amplitude_from_global_feature(self, h_global):
+        amp_raw = self.amp_head(h_global)
+        amp_real = self.amplitude_nn_scale * torch.tanh(
+            amp_raw[:, : self.num_harmonics]
+        )
+        amp_imag = self.amplitude_nn_scale * torch.tanh(
+            amp_raw[:, self.num_harmonics :]
+        )
+        c_nn = torch.complex(amp_real, amp_imag)
+        return c_nn, amp_real, amp_imag
 
     def build_dictionary(self, f, t):
         """
@@ -435,6 +472,7 @@ class PhysicalHarmonicVAE(nn.Module):
         mu_f, logvar_f, std_f, log_rho2_f = self.encoder.posterior_from_global_feature(
             h_global
         )
+        c_nn, amp_real_nn, amp_imag_nn = self.amplitude_from_global_feature(h_global)
         return {
             "mu_f": mu_f,
             "std_f": std_f,
@@ -442,4 +480,7 @@ class PhysicalHarmonicVAE(nn.Module):
             "log_rho2_f": log_rho2_f,
             "attn_weights": attn_weights,
             "h_windows": h_windows,
+            "c_nn": c_nn,
+            "amp_real_nn": amp_real_nn,
+            "amp_imag_nn": amp_imag_nn,
         }

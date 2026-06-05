@@ -556,6 +556,7 @@ def main():
             "global_aggregation",
             {},
         ).get("use_window_position_embedding", True),
+        amplitude_nn_cfg=CONFIG.get("amplitude_nn", {}),
     ).to(device)
     base_lr = float(train_cfg["lr"])
     optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
@@ -680,6 +681,8 @@ def main():
                 "amp_prior_var_norm_mean": 0.0,
                 "map_amp_norm_mean": 0.0,
                 "map_amp_norm_p95": 0.0,
+                "nn_amp_norm_mean": 0.0,
+                "nn_amp_norm_p95": 0.0,
                 "marginal_nll": 0.0,
                 "marginal_quad": 0.0,
                 "marginal_logdet": 0.0,
@@ -800,6 +803,8 @@ def main():
                     "amp_prior_var_norm_mean",
                     "map_amp_norm_mean",
                     "map_amp_norm_p95",
+                    "nn_amp_norm_mean",
+                    "nn_amp_norm_p95",
                     "marginal_nll",
                     "marginal_quad",
                     "marginal_logdet",
@@ -901,6 +906,7 @@ def main():
                 f"amp_post_std={train_means['amp_post_std_mean']:.3e} "
                 f"amp_prior_quad={train_means['amp_prior_quad']:.3e} "
                 f"map_amp_norm={train_means['map_amp_norm_mean']:.3e} "
+                f"nn_amp_norm={train_means['nn_amp_norm_mean']:.3e} "
                 f"lr={current_lr:.3e}"
             )
 

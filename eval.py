@@ -7,6 +7,7 @@ from loss import (
     _static_global_amp_prior_cfg,
     build_normalized_amp_prior,
     compute_frequency_kl,
+    compute_sequence_nnamp_recon_loss,
     compute_sequence_posterior_recon_loss,
 )
 
@@ -122,11 +123,16 @@ def evaluate_model(
     ls_amp_norm_values = []
     data_state_sums = {}
 
-    _, amp_prior_cfg = _static_global_amp_prior_cfg(loss_cfg)
+    mode, amp_prior_cfg = _static_global_amp_prior_cfg(loss_cfg)
     if signal_cfg is None:
         amp_prior_cfg["enabled"] = False
     use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
     amp_mode = amp_prior_cfg.get("mode", "map")
+    use_nn_amp = mode == "static_global_nnamp"
+    ls_at_pred_recon_mse_sum = 0.0
+    ls_at_pred_amp_mape_sum = 0.0
+    ls_at_pred_complex_rel_err_sum = 0.0
+    ls_at_pred_phase_err_sum = 0.0
 
     with torch.no_grad():
         for batch in dataloader:
@@ -178,7 +184,16 @@ def evaluate_model(
                 phase_circ_err_sum = torch.zeros(k_count, dtype=torch.float64)
 
             amp_post_var_diag = None
-            if use_amp_prior:
+            if use_nn_amp:
+                c_mean = outputs["c_nn"]
+                amp_real_mean = c_mean.real
+                amp_imag_mean = c_mean.imag
+                cond_mean = torch.zeros(
+                    batch_size,
+                    device=device,
+                    dtype=target_batch.dtype,
+                )
+            elif use_amp_prior:
                 amp_prior_mean, amp_prior_var = build_normalized_amp_prior(
                     f=mu_f,
                     t0=t0.squeeze(1),
@@ -230,23 +245,35 @@ def evaluate_model(
             )
             recon_mse_mean = _complex_ri_mse(x_hat_mean, target_global)
 
-            sampled_recon_loss, sampled_diag = compute_sequence_posterior_recon_loss(
-                y_complex=y_complex,
-                t=t_global,
-                mu_f=mu_f,
-                std_f=std_f,
-                model=model,
-                sequence_posterior_samples=s_seq,
-                ridge_lambda=model.ls_ridge,
-                noise_var_norm=noise_var_norm,
-                include_log_const=False,
-                amp_scale=amp_scale,
-                t0=t0.squeeze(1),
-                signal_cfg=signal_cfg,
-                amp_prior_cfg=amp_prior_cfg,
-                use_posterior_sampling=use_posterior_sampling,
-                normalize_by_num_points=normalize_by_num_points,
-            )
+            if use_nn_amp:
+                sampled_recon_loss, sampled_diag = compute_sequence_nnamp_recon_loss(
+                    y_complex=y_complex,
+                    t=t_global,
+                    mu_f=mu_f,
+                    c_nn=outputs["c_nn"],
+                    model=model,
+                    noise_var_norm=noise_var_norm,
+                    include_log_const=False,
+                    normalize_by_num_points=normalize_by_num_points,
+                )
+            else:
+                sampled_recon_loss, sampled_diag = compute_sequence_posterior_recon_loss(
+                    y_complex=y_complex,
+                    t=t_global,
+                    mu_f=mu_f,
+                    std_f=std_f,
+                    model=model,
+                    sequence_posterior_samples=s_seq,
+                    ridge_lambda=model.ls_ridge,
+                    noise_var_norm=noise_var_norm,
+                    include_log_const=False,
+                    amp_scale=amp_scale,
+                    t0=t0.squeeze(1),
+                    signal_cfg=signal_cfg,
+                    amp_prior_cfg=amp_prior_cfg,
+                    use_posterior_sampling=use_posterior_sampling,
+                    normalize_by_num_points=normalize_by_num_points,
+                )
             recon_mse_sampled = sampled_diag["recon_mse_sampled"]
             recon_nll_sampled = sampled_diag["recon_nll"]
             recon_nll_full = sampled_diag["recon_nll_full"]
@@ -294,6 +321,28 @@ def evaluate_model(
             phase_circ_err = _circular_abs_phase_error(c_pred_m, c_true_local)
             c_norm_mean = torch.linalg.norm(c_pred_m, dim=-1)
 
+            ls_amp_real_pred, ls_amp_imag_pred, c_ls_pred, _ = model.solve_amplitudes_ls(
+                y_complex=y_complex,
+                f=mu_f,
+                t=t_global,
+                ridge_lambda=model.ls_ridge,
+                return_condition=True,
+            )
+            x_hat_ls_pred = model.decode(
+                amp_real=ls_amp_real_pred,
+                amp_imag=ls_amp_imag_pred,
+                f=mu_f,
+                t=t_global,
+            )
+            ls_at_pred_recon_mse = _complex_ri_mse(x_hat_ls_pred, target_global)
+            c_ls_pred_m = c_ls_pred * amp_scale[:, None]
+            ls_amp_hat = torch.abs(c_ls_pred_m)
+            ls_amp_mape = torch.abs(ls_amp_hat - amp_true) / (amp_true + 1e-12)
+            ls_complex_rel_err = torch.abs(c_ls_pred_m - c_true_local) / (
+                amp_true + 1e-12
+            )
+            ls_phase_circ_err = _circular_abs_phase_error(c_ls_pred_m, c_true_local)
+
             freq_ok = freq_rel_err <= freq_relative_tol
             amp_ok = amp_mape <= amp_relative_tol
             complex_ok = complex_rel_err <= complex_coeff_relative_tol
@@ -326,6 +375,10 @@ def evaluate_model(
             stats["marginal_nll"] += sampled_diag["marginal_nll"].item() * n
             stats["marginal_quad"] += sampled_diag["marginal_quad"].item() * n
             stats["marginal_logdet"] += sampled_diag["marginal_logdet"].item() * n
+            ls_at_pred_recon_mse_sum += ls_at_pred_recon_mse.item() * n
+            ls_at_pred_amp_mape_sum += ls_amp_mape.sum().item()
+            ls_at_pred_complex_rel_err_sum += ls_complex_rel_err.sum().item()
+            ls_at_pred_phase_err_sum += ls_phase_circ_err.sum().item()
             for key, value in dataset_state.items():
                 if not torch.is_tensor(value) or value.numel() == 0:
                     continue
@@ -431,12 +484,20 @@ def evaluate_model(
             "freq_kl": freq_kl_sum / total_sequences,
             "freq_kl_raw": freq_kl_raw_sum / total_sequences,
             "amp_mape_mean": float(amp_mape_sum.sum() / total_freq_elements),
+            "nn_amp_mape_mean": (
+                float(amp_mape_sum.sum() / total_freq_elements) if use_nn_amp else 0.0
+            ),
             "amp_success_rate_mean": amp_sequence_success_sum / total_sequences,
             "joint_amp_freq_success_rate_mean": (
                 joint_amp_freq_sequence_success_sum / total_sequences
             ),
             "complex_coeff_rel_err_mean": float(
                 complex_rel_err_sum.sum() / total_freq_elements
+            ),
+            "nn_complex_coeff_rel_err_mean": (
+                float(complex_rel_err_sum.sum() / total_freq_elements)
+                if use_nn_amp
+                else 0.0
             ),
             "complex_coeff_rel_err_vector": (
                 complex_vector_rel_err_sum / total_sequences
@@ -445,6 +506,22 @@ def evaluate_model(
                 complex_sequence_success_sum / total_sequences
             ),
             "phase_circ_mae_rad": float(phase_circ_err_sum.sum() / total_freq_elements),
+            "nn_phase_circ_mae_rad": (
+                float(phase_circ_err_sum.sum() / total_freq_elements)
+                if use_nn_amp
+                else 0.0
+            ),
+            "nn_recon_mse": stats["recon_mse_mean"] if use_nn_amp else 0.0,
+            "ls_at_pred_recon_mse": ls_at_pred_recon_mse_sum / total_sequences,
+            "ls_at_pred_amp_mape_mean": (
+                ls_at_pred_amp_mape_sum / total_freq_elements
+            ),
+            "ls_at_pred_complex_coeff_rel_err_mean": (
+                ls_at_pred_complex_rel_err_sum / total_freq_elements
+            ),
+            "ls_at_pred_phase_circ_mae_rad": (
+                ls_at_pred_phase_err_sum / total_freq_elements
+            ),
             "ls_cond_mean": ls_cond_sum / total_sequences,
             "ls_cond_p95": float(torch.quantile(torch.cat(ls_cond_values), 0.95)),
             "ls_amp_norm_mean": ls_amp_norm_sum / total_sequences,

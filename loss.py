@@ -637,6 +637,98 @@ def compute_sequence_posterior_recon_loss(
     return recon_loss, diagnostics
 
 
+def compute_sequence_nnamp_recon_loss(
+    y_complex,
+    t,
+    mu_f,
+    c_nn,
+    model,
+    noise_var_norm=None,
+    include_log_const=False,
+    normalize_by_num_points=True,
+    eps=1e-8,
+):
+    """
+    Reconstruct a global sequence using deterministic NN-predicted amplitudes.
+
+    c_nn is in the same normalized domain as y_complex.
+    """
+    if not torch.is_complex(y_complex):
+        raise TypeError(f"y_complex must be complex, got {y_complex.dtype}")
+    if not torch.is_complex(c_nn):
+        raise TypeError(f"c_nn must be complex, got {c_nn.dtype}")
+    if c_nn.shape != mu_f.shape:
+        raise ValueError(f"c_nn shape must match mu_f: {c_nn.shape} vs {mu_f.shape}")
+
+    if noise_var_norm is None:
+        noise_var = torch.ones(
+            y_complex.shape[0],
+            device=y_complex.device,
+            dtype=y_complex.real.dtype,
+        )
+    else:
+        noise_var = noise_var_norm.to(device=y_complex.device, dtype=y_complex.real.dtype)
+        if noise_var.ndim != 1 or noise_var.shape[0] != y_complex.shape[0]:
+            raise ValueError(
+                f"noise_var_norm must have shape [B], got {noise_var_norm.shape}"
+            )
+    noise_var = noise_var.clamp_min(eps)
+
+    phi = model.build_dictionary(mu_f, t)
+    y_hat = (phi * c_nn.unsqueeze(1)).sum(dim=-1)
+    sqerr = torch.abs(y_hat - y_complex) ** 2
+    recon_mse = sqerr.mean()
+
+    recon_nll_per_sequence = (
+        sqerr / noise_var.view(-1, 1)
+    ).sum(dim=-1)
+    if normalize_by_num_points:
+        recon_nll_per_sequence = recon_nll_per_sequence / y_complex.shape[1]
+    recon_nll = recon_nll_per_sequence.mean()
+
+    log_const = y_complex.shape[1] * torch.log(math.pi * noise_var).mean()
+    if normalize_by_num_points:
+        log_const = log_const / y_complex.shape[1]
+    recon_nll_full = recon_nll + log_const
+    recon_loss = recon_nll_full if include_log_const else recon_nll
+
+    zero = torch.zeros((), device=y_complex.device, dtype=y_complex.real.dtype)
+    amp_norm = torch.linalg.norm(c_nn, dim=-1)
+    diagnostics = {
+        "f_samples": mu_f.unsqueeze(0),
+        "y_hat_samples": y_hat.unsqueeze(0),
+        "c_hat_samples": c_nn.unsqueeze(0),
+        "recon_mse_sampled": recon_mse,
+        "recon_nll": recon_nll,
+        "recon_nll_full": recon_nll_full,
+        "amp_prior_quad": zero,
+        "amp_lambda_mean": zero,
+        "amp_lambda_min": zero,
+        "amp_lambda_max": zero,
+        "amp_prior_var_norm_mean": zero,
+        "marginal_nll": zero,
+        "marginal_quad": zero,
+        "marginal_logdet": zero,
+        "amp_post_var_trace": zero,
+        "amp_post_std_mean": zero,
+        "amp_uncertainty_to_prior_ratio_mean": zero,
+        "noise_var_norm_mean": noise_var.mean(),
+        "noise_var_norm_min": noise_var.min(),
+        "noise_var_norm_max": noise_var.max(),
+        "freq_sample_std_mean": zero,
+        "ls_cond_mean": zero,
+        "ls_cond_p95": zero,
+        "ls_amp_norm_mean": zero,
+        "ls_amp_norm_p95": zero,
+        "map_amp_norm_mean": zero,
+        "map_amp_norm_p95": zero,
+        "nn_amp_norm_mean": amp_norm.mean(),
+        "nn_amp_norm_p95": torch.quantile(amp_norm.reshape(-1), 0.95),
+    }
+
+    return recon_loss, diagnostics
+
+
 def uniform_support_penalty(f_samples, freq_lower, freq_upper):
     if f_samples.ndim != 3:
         raise ValueError(f"f_samples must be [S, B, K], got {f_samples.shape}")
@@ -660,7 +752,7 @@ def _static_global_amp_prior_cfg(loss_cfg):
     mode = elbo_cfg.get("mode", "static_global_bayesianls")
     amp_prior_cfg = dict(loss_cfg.get("amplitude_prior", {}))
 
-    if mode == "static_global_ls":
+    if mode in ("static_global_ls", "static_global_nnamp"):
         amp_prior_cfg["enabled"] = False
     elif mode == "static_global_mapls":
         amp_prior_cfg["enabled"] = True
@@ -673,7 +765,8 @@ def _static_global_amp_prior_cfg(loss_cfg):
     else:
         raise ValueError(
             "loss.elbo.mode must be one of "
-            "'static_global_ls', 'static_global_mapls', 'static_global_bayesianls'; "
+            "'static_global_ls', 'static_global_nnamp', "
+            "'static_global_mapls', 'static_global_bayesianls'; "
             f"got {mode!r}"
         )
 
@@ -809,23 +902,37 @@ def compute_static_global_objective(
     include_log_const = bool(rec_cfg.get("include_log_const", False))
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
-    recon_loss, recon_diag = compute_sequence_posterior_recon_loss(
-        y_complex=y_complex,
-        t=t_global,
-        mu_f=mu_f,
-        std_f=std_f,
-        model=model,
-        sequence_posterior_samples=s_seq,
-        ridge_lambda=model.ls_ridge,
-        noise_var_norm=noise_var_norm,
-        include_log_const=include_log_const,
-        amp_scale=amp_scale,
-        t0=t0,
-        signal_cfg=signal_cfg,
-        amp_prior_cfg=amp_prior_cfg,
-        use_posterior_sampling=use_posterior_sampling,
-        normalize_by_num_points=normalize_by_num_points,
-    )
+    if mode == "static_global_nnamp":
+        if "c_nn" not in model_outputs:
+            raise KeyError("static_global_nnamp requires model_outputs['c_nn']")
+        recon_loss, recon_diag = compute_sequence_nnamp_recon_loss(
+            y_complex=y_complex,
+            t=t_global,
+            mu_f=mu_f,
+            c_nn=model_outputs["c_nn"],
+            model=model,
+            noise_var_norm=noise_var_norm,
+            include_log_const=include_log_const,
+            normalize_by_num_points=normalize_by_num_points,
+        )
+    else:
+        recon_loss, recon_diag = compute_sequence_posterior_recon_loss(
+            y_complex=y_complex,
+            t=t_global,
+            mu_f=mu_f,
+            std_f=std_f,
+            model=model,
+            sequence_posterior_samples=s_seq,
+            ridge_lambda=model.ls_ridge,
+            noise_var_norm=noise_var_norm,
+            include_log_const=include_log_const,
+            amp_scale=amp_scale,
+            t0=t0,
+            signal_cfg=signal_cfg,
+            amp_prior_cfg=amp_prior_cfg,
+            use_posterior_sampling=use_posterior_sampling,
+            normalize_by_num_points=normalize_by_num_points,
+        )
 
     freq_kl_per_item = compute_frequency_kl(
         mu_f=mu_f,
@@ -860,6 +967,16 @@ def compute_static_global_objective(
         "posterior_std_hz_mean": std_f.mean().detach(),
         "freq_sample_outside_rate": outside_rate.detach(),
         "static_global_mode": mode,
+        "nn_amp_norm_mean": torch.zeros(
+            (),
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
+        "nn_amp_norm_p95": torch.zeros(
+            (),
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
         "objective_cycles": torch.as_tensor(
             -1 if objective_cycles is None else int(objective_cycles),
             device=mu_f.device,
@@ -876,6 +993,9 @@ def compute_static_global_objective(
             dtype=mu_f.dtype,
         ).detach(),
     }
+    if mode == "static_global_nnamp":
+        diagnostics["nn_amp_norm_mean"] = recon_diag["nn_amp_norm_mean"].detach()
+        diagnostics["nn_amp_norm_p95"] = recon_diag["nn_amp_norm_p95"].detach()
 
     if "log_rho2_f" in model_outputs:
         diagnostics["log_rho2_f_mean"] = model_outputs["log_rho2_f"].mean().detach()
