@@ -665,6 +665,8 @@ def main():
                 "recon_nll_full": 0.0,
                 "freq_kl": 0.0,
                 "freq_kl_raw": 0.0,
+                "amp_kl": 0.0,
+                "amp_kl_raw": 0.0,
                 "freq_kl_beta_anneal": 0.0,
                 "freq_prior_reg": 0.0,
                 "posterior_std_hz_mean": 0.0,
@@ -784,6 +786,8 @@ def main():
                 train_sums["recon_nll_full"] += float(loss_diag["recon_nll_full"].item())
                 train_sums["freq_kl"] += float(loss_diag["freq_kl"].item())
                 train_sums["freq_kl_raw"] += float(loss_diag["freq_kl_raw"].item())
+                train_sums["amp_kl"] += float(loss_diag["amp_kl"].item())
+                train_sums["amp_kl_raw"] += float(loss_diag["amp_kl_raw"].item())
                 train_sums["freq_kl_beta_anneal"] += float(
                     loss_diag["freq_kl_beta_anneal"].item()
                 )
@@ -897,6 +901,8 @@ def main():
                 f"obj_windows={train_means['objective_num_windows']:.0f} "
                 f"freq_kl={train_means['freq_kl']:.6f} "
                 f"freq_kl_raw={train_means['freq_kl_raw']:.6f} "
+                f"amp_kl={train_means['amp_kl']:.6f} "
+                f"amp_kl_raw={train_means['amp_kl_raw']:.6f} "
                 f"kl_anneal={train_means['freq_kl_beta_anneal']:.4f} "
                 f"posterior_std={train_means['posterior_std_hz_mean']:.4f} "
                 f"outside={train_means['freq_sample_outside_rate']:.4f} "
@@ -982,6 +988,8 @@ def main():
                     f"loss={val_metrics['loss']:.6f} "
                     f"freq_kl={val_metrics['freq_kl']:.6f} "
                     f"freq_kl_raw={val_metrics.get('freq_kl_raw', val_metrics['freq_kl']):.6f} "
+                    f"amp_kl={val_metrics.get('amp_kl', 0.0):.6f} "
+                    f"amp_kl_raw={val_metrics.get('amp_kl_raw', 0.0):.6f} "
                     f"recon_nll={val_metrics['recon_nll_sampled']:.6f} "
                     f"recon_mse_mean={val_metrics['recon_mse_mean']:.6f} "
                     f"recon_mse_sampled={val_metrics['recon_mse_sampled']:.6f} "

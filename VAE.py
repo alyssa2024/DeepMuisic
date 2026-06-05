@@ -35,6 +35,10 @@ class PhysicalHarmonicVAE(nn.Module):
                 f"got {self.amplitude_nn_output_domain!r}"
             )
         self.amplitude_nn_scale = float(amplitude_nn_cfg.get("amp_scale_norm", 1.0))
+        self.amplitude_nn_min_logvar = float(amplitude_nn_cfg.get("min_logvar", -12.0))
+        self.amplitude_nn_max_logvar = float(amplitude_nn_cfg.get("max_logvar", 0.0))
+        if self.amplitude_nn_max_logvar <= self.amplitude_nn_min_logvar:
+            raise ValueError("amplitude_nn.max_logvar must be greater than min_logvar")
         feature_dim = int(getattr(encoder, "feature_dim"))
         self.window_pos_proj = nn.Linear(1, feature_dim)
         self.attn_mlp = nn.Sequential(
@@ -43,12 +47,22 @@ class PhysicalHarmonicVAE(nn.Module):
             nn.Linear(feature_dim, 1),
         )
         self.amp_head = nn.Linear(feature_dim, 2 * self.num_harmonics)
+        self.amp_logvar_head = nn.Linear(feature_dim, self.num_harmonics)
         nn.init.zeros_(self.amp_head.weight)
         nn.init.normal_(
             self.amp_head.bias,
             mean=0.0,
             std=float(amplitude_nn_cfg.get("init_scale", 0.05)),
         )
+        nn.init.zeros_(self.amp_logvar_head.weight)
+        init_logvar = float(amplitude_nn_cfg.get("init_logvar", -4.0))
+        init_unit = (
+            (init_logvar - self.amplitude_nn_min_logvar)
+            / (self.amplitude_nn_max_logvar - self.amplitude_nn_min_logvar)
+        )
+        init_unit = min(max(init_unit, 1e-6), 1.0 - 1e-6)
+        init_bias = math.log(init_unit / (1.0 - init_unit))
+        nn.init.constant_(self.amp_logvar_head.bias, init_bias)
 
     def amplitude_from_global_feature(self, h_global):
         amp_raw = self.amp_head(h_global)
@@ -59,7 +73,12 @@ class PhysicalHarmonicVAE(nn.Module):
             amp_raw[:, self.num_harmonics :]
         )
         c_nn = torch.complex(amp_real, amp_imag)
-        return c_nn, amp_real, amp_imag
+        raw_logvar = self.amp_logvar_head(h_global)
+        amp_logvar = self.amplitude_nn_min_logvar + (
+            self.amplitude_nn_max_logvar - self.amplitude_nn_min_logvar
+        ) * torch.sigmoid(raw_logvar)
+        amp_var = torch.exp(amp_logvar)
+        return c_nn, amp_real, amp_imag, amp_logvar, amp_var
 
     def build_dictionary(self, f, t):
         """
@@ -472,7 +491,9 @@ class PhysicalHarmonicVAE(nn.Module):
         mu_f, logvar_f, std_f, log_rho2_f = self.encoder.posterior_from_global_feature(
             h_global
         )
-        c_nn, amp_real_nn, amp_imag_nn = self.amplitude_from_global_feature(h_global)
+        c_nn, amp_real_nn, amp_imag_nn, amp_logvar_nn, amp_var_nn = (
+            self.amplitude_from_global_feature(h_global)
+        )
         return {
             "mu_f": mu_f,
             "std_f": std_f,
@@ -483,4 +504,6 @@ class PhysicalHarmonicVAE(nn.Module):
             "c_nn": c_nn,
             "amp_real_nn": amp_real_nn,
             "amp_imag_nn": amp_imag_nn,
+            "amp_logvar_nn": amp_logvar_nn,
+            "amp_var_nn": amp_var_nn,
         }

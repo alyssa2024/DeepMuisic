@@ -6,9 +6,12 @@ from batch_utils import extract_dataset_state
 from loss import (
     _static_global_amp_prior_cfg,
     build_normalized_amp_prior,
+    complex_diag_gaussian_kl,
     compute_frequency_kl,
+    compute_sequence_bayesian_nnamp_recon_loss,
     compute_sequence_nnamp_recon_loss,
     compute_sequence_posterior_recon_loss,
+    sample_sequence_frequencies,
 )
 
 
@@ -76,6 +79,7 @@ def evaluate_model(
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
     use_posterior_sampling = bool(rec_cfg.get("use_posterior_sampling", True))
     normalize_by_num_points = bool(rec_cfg.get("normalize_by_num_points", False))
+    include_log_const = bool(rec_cfg.get("include_log_const", False))
 
     total_sequences = 0
     total_freq_elements = 0
@@ -128,11 +132,14 @@ def evaluate_model(
         amp_prior_cfg["enabled"] = False
     use_amp_prior = bool(amp_prior_cfg.get("enabled", False))
     amp_mode = amp_prior_cfg.get("mode", "map")
-    use_nn_amp = mode == "static_global_nnamp"
+    use_nn_amp = mode in ("static_global_nnamp", "static_global_bayesian_nnamp")
+    use_bayesian_nnamp = mode == "static_global_bayesian_nnamp"
     ls_at_pred_recon_mse_sum = 0.0
     ls_at_pred_amp_mape_sum = 0.0
     ls_at_pred_complex_rel_err_sum = 0.0
     ls_at_pred_phase_err_sum = 0.0
+    amp_kl_sum = 0.0
+    amp_kl_raw_sum = 0.0
 
     with torch.no_grad():
         for batch in dataloader:
@@ -184,6 +191,17 @@ def evaluate_model(
                 phase_circ_err_sum = torch.zeros(k_count, dtype=torch.float64)
 
             amp_post_var_diag = None
+            amp_prior_mean_nn = None
+            amp_prior_var_nn = None
+            if use_bayesian_nnamp:
+                amp_prior_mean_nn, amp_prior_var_nn = build_normalized_amp_prior(
+                    f=mu_f,
+                    t0=t0.squeeze(1),
+                    amp_scale=amp_scale,
+                    signal_cfg=signal_cfg,
+                    amp_prior_cfg=loss_cfg.get("amplitude_prior", {}),
+                )
+
             if use_nn_amp:
                 c_mean = outputs["c_nn"]
                 amp_real_mean = c_mean.real
@@ -245,7 +263,37 @@ def evaluate_model(
             )
             recon_mse_mean = _complex_ri_mse(x_hat_mean, target_global)
 
-            if use_nn_amp:
+            if use_bayesian_nnamp:
+                if use_posterior_sampling:
+                    f_eval_samples = sample_sequence_frequencies(
+                        mu_f=mu_f,
+                        std_f=std_f,
+                        num_samples=s_seq,
+                        freq_lower=model.encoder.freq_lower,
+                        freq_upper=model.encoder.freq_upper,
+                    )
+                else:
+                    f_eval_samples = mu_f.unsqueeze(0)
+                sampled_recon_loss, sampled_diag = compute_sequence_bayesian_nnamp_recon_loss(
+                    y_complex=y_complex,
+                    t=t_global,
+                    mu_f=mu_f,
+                    amp_mu=outputs["c_nn"],
+                    amp_var=outputs["amp_var_nn"],
+                    model=model,
+                    noise_var_norm=noise_var_norm,
+                    include_log_const=include_log_const,
+                    normalize_by_num_points=normalize_by_num_points,
+                    f_samples=f_eval_samples,
+                )
+                amp_kl_per_item = complex_diag_gaussian_kl(
+                    mu_q=outputs["c_nn"],
+                    var_q=outputs["amp_var_nn"],
+                    mu_p=amp_prior_mean_nn,
+                    var_p=amp_prior_var_nn,
+                )
+                amp_kl_raw = amp_kl_per_item.mean()
+            elif use_nn_amp:
                 sampled_recon_loss, sampled_diag = compute_sequence_nnamp_recon_loss(
                     y_complex=y_complex,
                     t=t_global,
@@ -253,9 +301,10 @@ def evaluate_model(
                     c_nn=outputs["c_nn"],
                     model=model,
                     noise_var_norm=noise_var_norm,
-                    include_log_const=False,
+                    include_log_const=include_log_const,
                     normalize_by_num_points=normalize_by_num_points,
                 )
+                amp_kl_raw = torch.zeros((), device=device, dtype=target_batch.dtype)
             else:
                 sampled_recon_loss, sampled_diag = compute_sequence_posterior_recon_loss(
                     y_complex=y_complex,
@@ -266,7 +315,7 @@ def evaluate_model(
                     sequence_posterior_samples=s_seq,
                     ridge_lambda=model.ls_ridge,
                     noise_var_norm=noise_var_norm,
-                    include_log_const=False,
+                    include_log_const=include_log_const,
                     amp_scale=amp_scale,
                     t0=t0.squeeze(1),
                     signal_cfg=signal_cfg,
@@ -274,6 +323,7 @@ def evaluate_model(
                     use_posterior_sampling=use_posterior_sampling,
                     normalize_by_num_points=normalize_by_num_points,
                 )
+                amp_kl_raw = torch.zeros((), device=device, dtype=target_batch.dtype)
             recon_mse_sampled = sampled_diag["recon_mse_sampled"]
             recon_nll_sampled = sampled_diag["recon_nll"]
             recon_nll_full = sampled_diag["recon_nll_full"]
@@ -362,7 +412,13 @@ def evaluate_model(
                 total_order_pairs += order_ok.numel()
 
             beta_freq = float(loss_cfg.get("beta_freq", 1.0))
-            loss = sampled_recon_loss + beta_freq * freq_kl
+            amp_kl_cfg = loss_cfg.get("amplitude_kl", {})
+            beta_amp = float(amp_kl_cfg.get("beta_amp", amp_kl_cfg.get("beta", 1.0)))
+            amp_kl_enabled = bool(
+                amp_kl_cfg.get("enabled", use_bayesian_nnamp)
+            )
+            amp_kl = amp_kl_raw if amp_kl_enabled else torch.zeros_like(amp_kl_raw)
+            loss = sampled_recon_loss + beta_freq * freq_kl + beta_amp * amp_kl
 
             total_sequences += n
             total_freq_elements += n * k_count
@@ -375,6 +431,8 @@ def evaluate_model(
             stats["marginal_nll"] += sampled_diag["marginal_nll"].item() * n
             stats["marginal_quad"] += sampled_diag["marginal_quad"].item() * n
             stats["marginal_logdet"] += sampled_diag["marginal_logdet"].item() * n
+            amp_kl_sum += amp_kl.item() * n
+            amp_kl_raw_sum += amp_kl_raw.item() * n
             ls_at_pred_recon_mse_sum += ls_at_pred_recon_mse.item() * n
             ls_at_pred_amp_mape_sum += ls_amp_mape.sum().item()
             ls_at_pred_complex_rel_err_sum += ls_complex_rel_err.sum().item()
@@ -483,6 +541,8 @@ def evaluate_model(
             "freq_prior_reg": freq_prior_reg_sum / total_sequences,
             "freq_kl": freq_kl_sum / total_sequences,
             "freq_kl_raw": freq_kl_raw_sum / total_sequences,
+            "amp_kl": amp_kl_sum / total_sequences,
+            "amp_kl_raw": amp_kl_raw_sum / total_sequences,
             "amp_mape_mean": float(amp_mape_sum.sum() / total_freq_elements),
             "nn_amp_mape_mean": (
                 float(amp_mape_sum.sum() / total_freq_elements) if use_nn_amp else 0.0

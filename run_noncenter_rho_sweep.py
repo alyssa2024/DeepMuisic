@@ -37,28 +37,32 @@ def reset_config():
 
 
 def apply_v5_deterministic_curriculum_sanity():
-    CONFIG["loss"]["beta_freq"] = 0.0
+    CONFIG["loss"]["beta_freq"] = 1.0
     CONFIG["loss"]["reconstruction"].update(
         {
-            "include_log_const": False,
-            "use_posterior_sampling": False,
-            "sequence_posterior_samples": 1,
-            "sample_at_train": False,
+            "include_log_const": True,
+            "use_posterior_sampling": True,
+            "sequence_posterior_samples": 2,
+            "sample_at_train": True,
             "eval_at_mean": True,
             "normalize_by_num_points": True,
         }
     )
     CONFIG["loss"]["kl"].update(
         {
-            "enabled": False,
+            "enabled": True,
             "type": "trunc_normal_to_trunc_normal",
-            "warmup_steps": 10000,
+            "warmup_steps": 0,
             "reuse_reconstruction_samples": False,
         }
     )
+    CONFIG["loss"]["amplitude_kl"] = {
+        "enabled": True,
+        "beta_amp": 1.0,
+    }
     CONFIG["loss"]["elbo"].update(
         {
-            "mode": "static_global_nnamp",
+            "mode": "static_global_bayesian_nnamp",
             "state_aware": True,
             "strict_long_sequence_elbo": True,
             "global_time_origin": "parent",
@@ -66,11 +70,14 @@ def apply_v5_deterministic_curriculum_sanity():
     )
     CONFIG["amplitude_nn"] = {
         "enabled": True,
-        "type": "deterministic_complex",
+        "type": "complex_gaussian",
         "output_domain": "normalized",
         "activation": "tanh",
         "amp_scale_norm": 1.0,
         "init_scale": 0.05,
+        "min_logvar": -12.0,
+        "max_logvar": 0.0,
+        "init_logvar": -4.0,
     }
 
     CONFIG["training"]["epochs"] = 190
