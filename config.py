@@ -104,6 +104,7 @@ CONFIG = {
     "amplitude_nn": {
         "enabled": True,
         "type": "complex_gaussian",
+        "representation": "segment_local",
         "output_domain": "normalized",
         "activation": "tanh",
         "amp_scale_norm": 1.0,
@@ -165,6 +166,8 @@ CONFIG = {
     "training": {
         "epochs": 80,
         "lr": 2e-5,
+        "freeze_encoder_train_amp_head_only": True,
+        "amp_head_lr": 1e-3,
         "objective_curriculum": {
             "enabled": True,
             "cycles": [4, 16, 64, 256, 1024],

@@ -31,6 +31,15 @@ def _align_true_complex_coeff_to_local_time(
     return true_complex * torch.exp(1j * phase_shift)
 
 
+def _align_local_complex_coeff_to_global_time(
+    local_complex: torch.Tensor,
+    freq_hz: torch.Tensor,
+    t0: torch.Tensor,
+) -> torch.Tensor:
+    phase_shift = 2.0 * torch.pi * freq_hz * t0[:, None]
+    return local_complex * torch.exp(-1j * phase_shift)
+
+
 def _circular_abs_phase_error(
     pred_complex: torch.Tensor,
     true_complex: torch.Tensor,
@@ -116,6 +125,8 @@ def evaluate_model(
     complex_rel_err_sum = None
     complex_success_sum = None
     phase_circ_err_sum = None
+    local_complex_rel_err_sum = None
+    local_phase_circ_err_sum = None
 
     freq_sequence_success_sum = 0.0
     amp_sequence_success_sum = 0.0
@@ -221,6 +232,8 @@ def evaluate_model(
                 complex_rel_err_sum = torch.zeros(k_count, dtype=torch.float64)
                 complex_success_sum = torch.zeros(k_count, dtype=torch.float64)
                 phase_circ_err_sum = torch.zeros(k_count, dtype=torch.float64)
+                local_complex_rel_err_sum = torch.zeros(k_count, dtype=torch.float64)
+                local_phase_circ_err_sum = torch.zeros(k_count, dtype=torch.float64)
 
             amp_post_var_diag = None
             amp_prior_mean_nn = None
@@ -403,25 +416,40 @@ def evaluate_model(
             freq_norm_err = freq_err / (freq_half.view(1, -1) + 1e-12)
             freq_rel_err = torch.abs(freq_err) / (torch.abs(true_freq) + 1e-12)
 
-            c_pred_m = torch.complex(amp_real_mean, amp_imag_mean) * amp_scale[:, None]
+            f_coeff_eval = f_amp_eval if mode == "static_global_nnamp" else mu_f
+            c_pred_local_m = (
+                torch.complex(amp_real_mean, amp_imag_mean) * amp_scale[:, None]
+            )
+            c_pred_global_m = _align_local_complex_coeff_to_global_time(
+                local_complex=c_pred_local_m,
+                freq_hz=f_coeff_eval,
+                t0=t0.squeeze(1),
+            )
             c_true_local = _align_true_complex_coeff_to_local_time(
                 true_complex=true_amp,
                 true_freq_hz=true_freq,
                 t0=t0.squeeze(1),
             )
-            amp_hat = torch.abs(c_pred_m)
-            amp_true = torch.abs(c_true_local)
+            amp_hat = torch.abs(c_pred_global_m)
+            amp_true = torch.abs(true_amp)
             amp_abs_err = torch.abs(amp_hat - amp_true)
             amp_mape = amp_abs_err / (amp_true + 1e-12)
-            complex_rel_err = torch.abs(c_pred_m - c_true_local) / (
+            complex_rel_err = torch.abs(c_pred_global_m - true_amp) / (
                 amp_true + 1e-12
             )
             complex_vector_rel_err = torch.linalg.norm(
-                c_pred_m - c_true_local,
+                c_pred_global_m - true_amp,
                 dim=-1,
-            ) / (torch.linalg.norm(c_true_local, dim=-1) + 1e-12)
-            phase_circ_err = _circular_abs_phase_error(c_pred_m, c_true_local)
-            c_norm_mean = torch.linalg.norm(c_pred_m, dim=-1)
+            ) / (torch.linalg.norm(true_amp, dim=-1) + 1e-12)
+            phase_circ_err = _circular_abs_phase_error(c_pred_global_m, true_amp)
+            local_complex_rel_err = torch.abs(c_pred_local_m - c_true_local) / (
+                torch.abs(c_true_local) + 1e-12
+            )
+            local_phase_circ_err = _circular_abs_phase_error(
+                c_pred_local_m,
+                c_true_local,
+            )
+            c_norm_mean = torch.linalg.norm(c_pred_local_m, dim=-1)
 
             ls_amp_real_pred, ls_amp_imag_pred, c_ls_pred, _ = model.solve_amplitudes_ls(
                 y_complex=y_complex,
@@ -437,13 +465,18 @@ def evaluate_model(
                 t=t_global,
             )
             ls_at_pred_recon_mse = _complex_ri_mse(x_hat_ls_pred, target_global)
-            c_ls_pred_m = c_ls_pred * amp_scale[:, None]
-            ls_amp_hat = torch.abs(c_ls_pred_m)
+            c_ls_local_m = c_ls_pred * amp_scale[:, None]
+            c_ls_global_m = _align_local_complex_coeff_to_global_time(
+                local_complex=c_ls_local_m,
+                freq_hz=f_coeff_eval,
+                t0=t0.squeeze(1),
+            )
+            ls_amp_hat = torch.abs(c_ls_global_m)
             ls_amp_mape = torch.abs(ls_amp_hat - amp_true) / (amp_true + 1e-12)
-            ls_complex_rel_err = torch.abs(c_ls_pred_m - c_true_local) / (
+            ls_complex_rel_err = torch.abs(c_ls_global_m - true_amp) / (
                 amp_true + 1e-12
             )
-            ls_phase_circ_err = _circular_abs_phase_error(c_ls_pred_m, c_true_local)
+            ls_phase_circ_err = _circular_abs_phase_error(c_ls_global_m, true_amp)
 
             freq_ok = freq_rel_err <= freq_relative_tol
             amp_ok = amp_mape <= amp_relative_tol
@@ -547,6 +580,10 @@ def evaluate_model(
             complex_rel_err_sum += complex_rel_err.sum(dim=0).double().cpu()
             complex_success_sum += complex_ok.float().sum(dim=0).double().cpu()
             phase_circ_err_sum += phase_circ_err.sum(dim=0).double().cpu()
+            local_complex_rel_err_sum += (
+                local_complex_rel_err.sum(dim=0).double().cpu()
+            )
+            local_phase_circ_err_sum += local_phase_circ_err.sum(dim=0).double().cpu()
 
             freq_sequence_success_sum += freq_success_rate.item() * n
             amp_sequence_success_sum += amp_success_rate.item() * n
@@ -603,6 +640,8 @@ def evaluate_model(
     complex_rel_err_h = complex_rel_err_sum / total_sequences
     complex_success_h = complex_success_sum / total_sequences
     phase_circ_mae_h = phase_circ_err_sum / total_sequences
+    local_complex_rel_err_h = local_complex_rel_err_sum / total_sequences
+    local_phase_circ_mae_h = local_phase_circ_err_sum / total_sequences
 
     stats.update(
         {
@@ -659,6 +698,12 @@ def evaluate_model(
                 if use_nn_amp
                 else 0.0
             ),
+            "local_complex_coeff_rel_err_mean": float(
+                local_complex_rel_err_sum.sum() / total_freq_elements
+            ),
+            "local_phase_circ_mae_rad": float(
+                local_phase_circ_err_sum.sum() / total_freq_elements
+            ),
             "nn_recon_mse": stats["recon_mse_mean"] if use_nn_amp else 0.0,
             "ls_at_pred_recon_mse": ls_at_pred_recon_mse_sum / total_sequences,
             "ls_at_pred_amp_mape_mean": (
@@ -712,5 +757,16 @@ def evaluate_model(
     _add_per_harmonic_metrics(stats, "phase_circ_mae", phase_circ_mae_h)
     for k in range(1, num_harmonics + 1):
         stats[f"phase_circ_mae_h{k}_rad"] = stats.pop(f"phase_circ_mae_h{k}")
+
+    _add_per_harmonic_metrics(
+        stats,
+        "local_complex_coeff_rel_err",
+        local_complex_rel_err_h,
+    )
+    _add_per_harmonic_metrics(stats, "local_phase_circ_mae", local_phase_circ_mae_h)
+    for k in range(1, num_harmonics + 1):
+        stats[f"local_phase_circ_mae_h{k}_rad"] = stats.pop(
+            f"local_phase_circ_mae_h{k}"
+        )
 
     return stats

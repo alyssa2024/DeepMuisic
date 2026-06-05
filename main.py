@@ -559,7 +559,23 @@ def main():
         amplitude_nn_cfg=CONFIG.get("amplitude_nn", {}),
     ).to(device)
     base_lr = float(train_cfg["lr"])
-    optimizer = torch.optim.Adam(model.parameters(), lr=base_lr)
+    if bool(train_cfg.get("freeze_encoder_train_amp_head_only", False)):
+        for _, p in model.named_parameters():
+            p.requires_grad = False
+        for name, p in model.named_parameters():
+            if name.startswith("amp_head"):
+                p.requires_grad = True
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        if not trainable_params:
+            raise ValueError("No trainable parameters selected for amp_head-only training")
+        base_lr = float(train_cfg.get("amp_head_lr", 1e-3))
+        print(
+            "Training only amp_head parameters: "
+            f"lr={base_lr:g}, num_tensors={len(trainable_params)}"
+        )
+    else:
+        trainable_params = list(model.parameters())
+    optimizer = torch.optim.Adam(trainable_params, lr=base_lr)
     curriculum_cfg = _resolve_objective_curriculum(train_cfg)
     if curriculum_cfg["enabled"]:
         total_curriculum_epochs = sum(curriculum_cfg["epochs_per_stage"])
