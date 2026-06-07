@@ -356,6 +356,11 @@ def _run_single_instance(
         lr_min,
     ) = _resolve_lr_schedule(train_cfg, steps_per_epoch=1)
     eval_every = int(eval_cfg.get("eval_every", 5))
+    early_cfg = train_cfg.get("early_stopping", {})
+    monitor_key = early_cfg.get("monitor", "val_recon_btt_mse")
+    monitor_mode = early_cfg.get("mode", "min")
+    if monitor_mode not in ("min", "max"):
+        raise ValueError(f"Unsupported early_stopping.mode={monitor_mode}")
     history = {}
     best_metrics = None
     final_metrics = None
@@ -446,13 +451,26 @@ def _run_single_instance(
             metrics["total_steps"] = total_steps
             metrics["seed"] = seed
             final_metrics = metrics
-            if best_metrics is None or metrics["val_map_profile_core"] < best_metrics[
-                "val_map_profile_core"
-            ]:
+            if monitor_key not in metrics:
+                raise KeyError(
+                    f"early_stopping.monitor={monitor_key!r} is not in metrics. "
+                    f"Available keys: {sorted(metrics.keys())}"
+                )
+            improved = (
+                best_metrics is None
+                or (
+                    metrics[monitor_key] < best_metrics[monitor_key]
+                    if monitor_mode == "min"
+                    else metrics[monitor_key] > best_metrics[monitor_key]
+                )
+            )
+            if improved:
                 best_metrics = dict(metrics)
             print(
                 "[EVAL] "
                 f"epoch={epoch:04d} "
+                f"{monitor_key}={metrics[monitor_key]:.6f} "
+                f"val_recon_btt_mse={metrics['val_recon_btt_mse']:.6f} "
                 f"val_map_core={metrics['val_map_profile_core']:.6f} "
                 f"test_map_core={metrics['test_map_profile_core']:.6f} "
                 f"freq_rmse={metrics['freq_rmse_hz_mean']:.4f} "

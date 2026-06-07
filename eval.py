@@ -149,6 +149,9 @@ def evaluate_single_instance_splits(
             metrics[f"{prefix}_recon_mse_sampled"] = float(
                 split_diag["recon_mse_sampled"].item()
             )
+            metrics[f"{prefix}_recon_btt_mse"] = metrics[
+                f"{prefix}_recon_mse_sampled"
+            ]
             metrics[f"{prefix}_map_lambda_mean"] = float(
                 split_diag.get("map_lambda_mean", torch.tensor(0.0)).item()
             )
@@ -170,8 +173,9 @@ def evaluate_single_instance_splits(
                 "posterior_std_rel_mean": float((std_f / (freq_half + 1e-12)).mean().item()),
                 "freq_kl": float(train_diag["freq_kl"].item()),
                 "freq_kl_raw": float(train_diag["freq_kl_raw"].item()),
-                "recon_mse_mean": metrics["val_recon_mse_sampled"],
-                "recon_mse_sampled": metrics["val_recon_mse_sampled"],
+                "recon_mse_mean": metrics["val_recon_btt_mse"],
+                "recon_mse_sampled": metrics["val_recon_btt_mse"],
+                "recon_btt_mse": metrics["val_recon_btt_mse"],
                 "recon_nll_sampled": metrics["val_data_nll_core"],
                 "recon_nll_full": float(train_diag["recon_nll_full"].item()),
             }

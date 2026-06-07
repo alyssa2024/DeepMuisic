@@ -86,7 +86,7 @@ CONFIG = {
         "amplitude_prior": {
             "type": "complex_isotropic_gaussian",
             "tau2_norm": 1.0,
-            "include_map_prior_penalty": True,
+            "include_map_prior_penalty": False,
         },
         "success": {
             "freq_relative_tol": 0.02,
@@ -108,7 +108,7 @@ CONFIG = {
         },
         "early_stopping": {
             "enabled": True,
-            "monitor": "val_map_profile_core",
+            "monitor": "val_recon_btt_mse",
             "mode": "min",
             "patience": 3,
             "min_delta": 1e-6,
