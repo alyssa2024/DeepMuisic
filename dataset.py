@@ -371,6 +371,8 @@ class BTTSingleInstanceDataset(Dataset):
         num_val_patches=None,
         num_test_patches=None,
         patch_hop_cycles=None,
+        patch_num_samples=None,
+        patch_hop_samples=None,
         allow_patch_overlap=False,
         normalization="group_std",
         parameter_source="fixed",
@@ -419,6 +421,14 @@ class BTTSingleInstanceDataset(Dataset):
             if patch_hop_cycles is None
             else int(patch_hop_cycles)
         )
+        self.patch_num_samples = (
+            None if patch_num_samples is None else int(patch_num_samples)
+        )
+        self.patch_hop_samples = (
+            self.patch_num_samples
+            if patch_hop_samples is None
+            else int(patch_hop_samples)
+        )
         self.allow_patch_overlap = bool(allow_patch_overlap)
 
         if self.patch_num_cycles <= 0:
@@ -427,10 +437,28 @@ class BTTSingleInstanceDataset(Dataset):
             raise ValueError("at least one patch is required")
         if self.patch_hop_cycles <= 0:
             raise ValueError("patch_hop_cycles must be positive")
-        if not self.allow_patch_overlap and self.patch_hop_cycles < self.patch_num_cycles:
-            raise ValueError(
-                "patch_hop_cycles must be >= patch_num_cycles when overlap is disabled"
-            )
+        if self.patch_num_samples is not None:
+            if self.patch_num_samples <= 0:
+                raise ValueError("patch_num_samples must be positive")
+            if self.patch_hop_samples <= 0:
+                raise ValueError("patch_hop_samples must be positive")
+            if (
+                not self.allow_patch_overlap
+                and self.patch_hop_samples < self.patch_num_samples
+            ):
+                raise ValueError(
+                    "patch_hop_samples must be >= patch_num_samples "
+                    "when overlap is disabled"
+                )
+        else:
+            if (
+                not self.allow_patch_overlap
+                and self.patch_hop_cycles < self.patch_num_cycles
+            ):
+                raise ValueError(
+                    "patch_hop_cycles must be >= patch_num_cycles "
+                    "when overlap is disabled"
+                )
 
         rng = np.random.default_rng(self.seed)
         if parameter_source == "fixed":
@@ -453,9 +481,17 @@ class BTTSingleInstanceDataset(Dataset):
         self.true_amp_real = amp_real
         self.true_amp_imag = amp_imag
 
-        total_cycles = self.patch_num_cycles + (
-            self.total_patches - 1
-        ) * self.patch_hop_cycles
+        if self.patch_num_samples is None:
+            patch_len = self.patch_num_cycles * self.num_probes
+            hop_len = self.patch_hop_cycles * self.num_probes
+            total_cycles = self.patch_num_cycles + (
+                self.total_patches - 1
+            ) * self.patch_hop_cycles
+        else:
+            patch_len = self.patch_num_samples
+            hop_len = self.patch_hop_samples
+            total_samples = patch_len + (self.total_patches - 1) * hop_len
+            total_cycles = int(np.ceil(total_samples / float(self.num_probes)))
         (
             t_samples,
             _freqs_per_rev,
@@ -479,8 +515,6 @@ class BTTSingleInstanceDataset(Dataset):
             rng=rng,
         )
 
-        patch_len = self.patch_num_cycles * self.num_probes
-        hop_len = self.patch_hop_cycles * self.num_probes
         patches = []
         for patch_idx in range(self.total_patches):
             start = patch_idx * hop_len
@@ -568,6 +602,7 @@ class BTTSingleInstanceDataset(Dataset):
     def _encode_patch(self, patch, amp_scale, noise_power):
         x_norm = patch["x_observed"] / amp_scale
         rev_ids_local = patch["rev_ids"] - patch["rev_ids"][0]
+        local_n_revs = max(int(rev_ids_local.max()) + 1, 1)
         features, t_samples, rev_ids, probe_ids = build_btt_point_features(
             x_observed=x_norm,
             t_samples=patch["t_abs"],
@@ -576,7 +611,7 @@ class BTTSingleInstanceDataset(Dataset):
             theta_samples=patch["theta_samples"],
             freqs_at_samples=patch["freqs_at_samples"],
             base_freq=self.base_freq,
-            n_revs=max(self.patch_num_cycles, 1),
+            n_revs=local_n_revs,
         )
         t_abs = t_samples.astype(np.float32)
         t_local = (t_abs - t_abs[0]).astype(np.float32)

@@ -236,6 +236,8 @@ def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_u
             snr_db=signal_cfg["snr_db"],
             seed=seed,
             patch_hop_cycles=data_cfg.get("patch_hop_cycles", data_cfg["patch_num_cycles"]),
+            patch_num_samples=data_cfg.get("patch_num_samples"),
+            patch_hop_samples=data_cfg.get("patch_hop_samples"),
             allow_patch_overlap=data_cfg.get("allow_patch_overlap", False),
             normalization=data_cfg.get("normalization", "group_std"),
             parameter_source=signal_cfg.get("single_instance_parameter_source", "fixed"),
