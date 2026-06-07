@@ -7,6 +7,7 @@ Edit values here, then run `main.py`.
 CONFIG = {
     "seed": 42,
     "data": {
+        "dataset_type": "profile_patch_group",
         "input_dim": 6,
         "num_harmonics": 4,
         "num_probes": 4,
@@ -18,11 +19,12 @@ CONFIG = {
         "num_val_sequences": 2000,
         "num_test_sequences": 2000,
         "batch_size": 16,
-        "normalization": "per_sequence_std",
+        "patches_per_group": 4,
+        "normalization": "per_patch_std",
     },
     "signal": {
-        "amp_real_center_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
-        "amp_imag_center_m": [0.0, 0.0008415, 0.0007274, 0.0001270],
+        "amp_real_center_m": [0.6, 0.5403, -0.3329, -0.8910],
+        "amp_imag_center_m": [0.0, 0.8415, 0.7274, 0.1270],
         "amp_data_prior": {
             "type": "independent_uniform",
             "relative_half_band": 0.2,
@@ -42,13 +44,11 @@ CONFIG = {
         "posterior": {
             "type": "truncated_normal",
             "scale_parameterization": "sigmoid_bound",
-            "min_log_rho2": -12.0,
-            "max_log_rho2": -7.0,
+            "min_log_rho2": -8.0,
+            "max_log_rho2": -2.0,
         },
         "loss_prior": {
-            "type": "truncated_normal",
-            "mean": "center",
-            "std_ratio_to_half_band": 0.5,
+            "type": "uniform",
         },
     },
     "model": {
@@ -64,17 +64,21 @@ CONFIG = {
         "beta_freq": 1.0,
         "reconstruction": {
             "type": "complex_gaussian_nll",
-            "include_log_const": False,
+            "include_log_const": True,
             "use_posterior_sampling": True,
-            "sequence_posterior_samples": 2,
+            "sequence_posterior_samples": 4,
             "sample_at_train": True,
             "eval_at_mean": True,
         },
         "kl": {
             "enabled": True,
-            "type": "trunc_normal_to_trunc_normal",
-            "warmup_steps": 10000,
+            "type": "trunc_normal_to_uniform",
+            "warmup_steps": 100,
             "reuse_reconstruction_samples": False,
+        },
+        "amplitude_prior": {
+            "ridge_from_noise": True,
+            "tau2_norm": 1.0,
         },
         "success": {
             "freq_relative_tol": 0.02,

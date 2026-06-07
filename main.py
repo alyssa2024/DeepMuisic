@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import CONFIG
-from dataset import BTTSequenceDataset
+from dataset import BTTProfileGroupDataset, BTTSequenceDataset
 from Encoder import VariationalIndependentTimeSeriesTransformer
 from eval import evaluate_model
 from loss import compute_harmonic_loss
@@ -193,6 +193,31 @@ def _build_metrics_payload(
 
 def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_upper):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
+    dataset_type = data_cfg.get("dataset_type", "profile_patch_group")
+    if dataset_type == "profile_patch_group":
+        return BTTProfileGroupDataset(
+            num_groups=num_sequences,
+            patches_per_group=data_cfg.get("patches_per_group", 4),
+            num_cycles=data_cfg["num_cycles"],
+            num_probes=data_cfg["num_probes"],
+            base_freq=data_cfg["base_freq"],
+            fluctuation_delta=data_cfg["fluctuation_delta"],
+            probe_angles=data_cfg["probes"],
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            amp_real_center=signal_cfg["amp_real_center_m"],
+            amp_imag_center=signal_cfg["amp_imag_center_m"],
+            amp_relative_half_band=amp_prior_cfg["relative_half_band"],
+            amp_min_half_band=amp_prior_cfg["min_half_band_m"],
+            snr_db=signal_cfg["snr_db"],
+            seed=seed,
+            normalization=data_cfg.get("normalization", "per_patch_std"),
+        )
+    if dataset_type != "independent_sequence":
+        raise ValueError(
+            "data.dataset_type must be one of "
+            "'profile_patch_group', 'independent_sequence'"
+        )
     return BTTSequenceDataset(
         num_sequences=num_sequences,
         num_cycles=data_cfg["num_cycles"],
@@ -267,8 +292,9 @@ def main():
     )
     print(
         "Datasets: "
-        f"train_sequences={len(train_set)}, val_sequences={len(val_set)}, "
-        f"sequence_length={data_cfg['num_cycles'] * data_cfg['num_probes']}"
+        f"train_items={len(train_set)}, val_items={len(val_set)}, "
+        f"patches_per_group={data_cfg.get('patches_per_group', 1)}, "
+        f"patch_length={data_cfg['num_cycles'] * data_cfg['num_probes']}"
     )
 
     posterior_cfg = freq_cfg.get("posterior", {})
@@ -392,7 +418,10 @@ def main():
                 probe_ids = batch["probe_ids"].to(device)
                 target_batch = batch["target"].to(device)
                 noise_var_norm = batch["noise_var_norm"].to(device)
-                t_local = t_batch - t_batch[:, :1]
+                if t_batch.dim() == 3:
+                    t_local = t_batch - t_batch[:, :, :1]
+                else:
+                    t_local = t_batch - t_batch[:, :1]
 
                 optimizer.zero_grad()
                 model_outputs = model(x_batch, t_local, probe_ids=probe_ids)

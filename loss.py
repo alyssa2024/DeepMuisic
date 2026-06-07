@@ -212,6 +212,20 @@ def compute_beta_anneal(loss_cfg, step=None):
     return min(1.0, float(step) / float(warmup_steps))
 
 
+def resolve_profile_ls_ridge(loss_cfg, fallback_ridge, noise_var_norm=None):
+    amp_prior_cfg = loss_cfg.get("amplitude_prior", {})
+    if not bool(amp_prior_cfg.get("ridge_from_noise", False)):
+        return fallback_ridge
+    if noise_var_norm is None:
+        raise ValueError(
+            "loss.amplitude_prior.ridge_from_noise=True requires noise_var_norm"
+        )
+    tau2 = float(amp_prior_cfg.get("tau2_norm", 1.0))
+    if tau2 <= 0.0:
+        raise ValueError("loss.amplitude_prior.tau2_norm must be positive")
+    return noise_var_norm / tau2
+
+
 def sample_sequence_frequencies(mu_f, std_f, num_samples, freq_lower, freq_upper):
     """
     Sample sequence-level frequency vectors from truncated Gaussian posterior.
@@ -345,6 +359,147 @@ def compute_sequence_posterior_recon_loss(
     return recon_loss, diagnostics
 
 
+def compute_group_profile_recon_loss(
+    y_complex,
+    t,
+    mu_f,
+    std_f,
+    model,
+    sequence_posterior_samples,
+    ridge_lambda,
+    f_samples=None,
+    noise_var_norm=None,
+    include_log_const=True,
+    eps=1e-8,
+):
+    """
+    Profile reconstruction loss for shared-frequency patch groups.
+
+    Args:
+        y_complex: [G, P, L]
+        t:         [G, P, L]
+        mu_f:      [G, K] fused global posterior mean
+        std_f:     [G, K] fused global posterior std
+
+    Returns:
+        mean over groups of full/profile complex Gaussian NLL.
+    """
+    if y_complex.ndim != 3:
+        raise ValueError(f"y_complex must be [G, P, L], got {y_complex.shape}")
+    if t.shape != y_complex.shape:
+        raise ValueError(f"t shape {t.shape} must match y_complex {y_complex.shape}")
+    if mu_f.ndim != 2 or std_f.ndim != 2:
+        raise ValueError(f"mu_f/std_f must be [G, K], got {mu_f.shape}/{std_f.shape}")
+
+    group_size, patches_per_group, seq_len = y_complex.shape
+    if f_samples is None:
+        f_samples = sample_sequence_frequencies(
+            mu_f=mu_f,
+            std_f=std_f,
+            num_samples=sequence_posterior_samples,
+            freq_lower=model.encoder.freq_lower,
+            freq_upper=model.encoder.freq_upper,
+        )
+    else:
+        if f_samples.ndim != 3:
+            raise ValueError(f"f_samples must be [S, G, K], got {f_samples.shape}")
+        if f_samples.shape[1:] != mu_f.shape:
+            raise ValueError(
+                f"f_samples shape {f_samples.shape} does not match mu_f {mu_f.shape}"
+            )
+
+    y_hat_samples = []
+    c_hat_samples = []
+    ls_cond_samples = []
+    y_flat = y_complex.reshape(group_size * patches_per_group, seq_len)
+    t_flat = t.reshape(group_size * patches_per_group, seq_len)
+    if torch.is_tensor(ridge_lambda):
+        ridge_for_ls = ridge_lambda.to(device=y_complex.device)
+        if ridge_for_ls.shape != y_complex.shape[:2]:
+            raise ValueError(
+                f"ridge_lambda tensor must have shape [G, P], got {ridge_for_ls.shape}"
+            )
+        ridge_for_ls = ridge_for_ls.reshape(group_size * patches_per_group)
+    else:
+        ridge_for_ls = ridge_lambda
+
+    for s in range(f_samples.shape[0]):
+        f_s = f_samples[s]
+        f_flat = (
+            f_s[:, None, :]
+            .expand(group_size, patches_per_group, f_s.shape[-1])
+            .reshape(group_size * patches_per_group, f_s.shape[-1])
+        )
+        amp_real_s, amp_imag_s, c_s, cond_s = model.solve_amplitudes_ls(
+            y_complex=y_flat,
+            f=f_flat,
+            t=t_flat,
+            ridge_lambda=ridge_for_ls,
+            return_condition=True,
+        )
+        y_hat_s = model.decode(
+            amp_real=amp_real_s,
+            amp_imag=amp_imag_s,
+            f=f_flat,
+            t=t_flat,
+        )
+        y_hat_samples.append(y_hat_s.reshape(group_size, patches_per_group, seq_len))
+        c_hat_samples.append(c_s.reshape(group_size, patches_per_group, -1))
+        ls_cond_samples.append(cond_s.reshape(group_size, patches_per_group))
+
+    y_hat_samples = torch.stack(y_hat_samples, dim=0)
+    c_hat_samples = torch.stack(c_hat_samples, dim=0)
+    ls_cond_samples = torch.stack(ls_cond_samples, dim=0)
+
+    sqerr = torch.abs(y_hat_samples - y_complex.unsqueeze(0)) ** 2
+    recon_mse = sqerr.mean()
+
+    if noise_var_norm is None:
+        noise_var = torch.ones(
+            group_size,
+            patches_per_group,
+            device=y_complex.device,
+            dtype=sqerr.dtype,
+        )
+    else:
+        noise_var = noise_var_norm.to(device=y_complex.device, dtype=sqerr.dtype)
+        if noise_var.shape != y_complex.shape[:2]:
+            raise ValueError(
+                f"noise_var_norm must have shape [G, P], got {noise_var_norm.shape}"
+            )
+    noise_var = noise_var.clamp_min(eps)
+
+    recon_core_per_sample_group = (
+        sqerr / noise_var.view(1, group_size, patches_per_group, 1)
+    ).sum(dim=(2, 3))
+    recon_nll_core = recon_core_per_sample_group.mean()
+    log_const_per_group = seq_len * torch.log(math.pi * noise_var).sum(dim=1)
+    log_const = log_const_per_group.mean()
+    recon_nll_full = recon_nll_core + log_const
+    recon_loss = recon_nll_full if include_log_const else recon_nll_core
+
+    amp_norm = torch.linalg.norm(c_hat_samples, dim=-1)
+    diagnostics = {
+        "f_samples": f_samples,
+        "y_hat_samples": y_hat_samples,
+        "c_hat_samples": c_hat_samples,
+        "recon_mse_sampled": recon_mse,
+        "recon_nll": recon_nll_core,
+        "recon_nll_full": recon_nll_full,
+        "recon_log_const": log_const,
+        "noise_var_norm_mean": noise_var.mean(),
+        "noise_var_norm_min": noise_var.min(),
+        "noise_var_norm_max": noise_var.max(),
+        "freq_sample_std_mean": f_samples.std(dim=0, unbiased=False).mean(),
+        "ls_cond_mean": ls_cond_samples.mean(),
+        "ls_cond_p95": torch.quantile(ls_cond_samples.reshape(-1), 0.95),
+        "ls_amp_norm_mean": amp_norm.mean(),
+        "ls_amp_norm_p95": torch.quantile(amp_norm.reshape(-1), 0.95),
+    }
+
+    return recon_loss, diagnostics
+
+
 def uniform_support_penalty(f_samples, freq_lower, freq_upper):
     if f_samples.ndim != 3:
         raise ValueError(f"f_samples must be [S, B, K], got {f_samples.shape}")
@@ -374,29 +529,48 @@ def compute_harmonic_loss(
 ):
     """
     Args:
-        x_target: [B, L, 2]
+        x_target: [B, L, 2] or [G, P, L, 2]
         model_outputs: dict with mu_f/std_f/logvar_f
-        t: [B, L]
+        t: [B, L] or [G, P, L]
     """
     mu_f = model_outputs["mu_f"]
     std_f = model_outputs["std_f"]
 
-    y_complex = torch.complex(x_target[..., 0], x_target[..., 1])
-
     rec_cfg = loss_cfg.get("reconstruction", {})
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
     include_log_const = bool(rec_cfg.get("include_log_const", False))
-    recon_loss, recon_diag = compute_sequence_posterior_recon_loss(
-        y_complex=y_complex,
-        t=t,
-        mu_f=mu_f,
-        std_f=std_f,
-        model=model,
-        sequence_posterior_samples=s_seq,
-        ridge_lambda=model.ls_ridge,
+    y_complex = torch.complex(x_target[..., 0], x_target[..., 1])
+    is_group_profile = x_target.ndim == 4
+    ridge_lambda = resolve_profile_ls_ridge(
+        loss_cfg=loss_cfg,
+        fallback_ridge=model.ls_ridge,
         noise_var_norm=noise_var_norm,
-        include_log_const=include_log_const,
     )
+
+    if is_group_profile:
+        recon_loss, recon_diag = compute_group_profile_recon_loss(
+            y_complex=y_complex,
+            t=t,
+            mu_f=mu_f,
+            std_f=std_f,
+            model=model,
+            sequence_posterior_samples=s_seq,
+            ridge_lambda=ridge_lambda,
+            noise_var_norm=noise_var_norm,
+            include_log_const=include_log_const,
+        )
+    else:
+        recon_loss, recon_diag = compute_sequence_posterior_recon_loss(
+            y_complex=y_complex,
+            t=t,
+            mu_f=mu_f,
+            std_f=std_f,
+            model=model,
+            sequence_posterior_samples=s_seq,
+            ridge_lambda=ridge_lambda,
+            noise_var_norm=noise_var_norm,
+            include_log_const=include_log_const,
+        )
 
     kl_cfg = loss_cfg.get("kl", {})
     kl_type = kl_cfg.get("type", "trunc_normal_to_trunc_normal")
@@ -458,6 +632,20 @@ def compute_harmonic_loss(
         diagnostics["log_rho2_f_mean"] = model_outputs["log_rho2_f"].mean().detach()
         diagnostics["log_rho2_f_min"] = model_outputs["log_rho2_f"].min().detach()
         diagnostics["log_rho2_f_max"] = model_outputs["log_rho2_f"].max().detach()
+    if "std_f_local" in model_outputs:
+        diagnostics["posterior_std_local_hz_mean"] = (
+            model_outputs["std_f_local"].mean().detach()
+        )
+    if "log_rho2_f_local" in model_outputs:
+        diagnostics["log_rho2_f_local_mean"] = (
+            model_outputs["log_rho2_f_local"].mean().detach()
+        )
+        diagnostics["log_rho2_f_local_min"] = (
+            model_outputs["log_rho2_f_local"].min().detach()
+        )
+        diagnostics["log_rho2_f_local_max"] = (
+            model_outputs["log_rho2_f_local"].max().detach()
+        )
 
     diagnostics.update(
         {

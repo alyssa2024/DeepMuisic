@@ -171,3 +171,168 @@ class BTTSequenceDataset(Dataset):
             "amp_scale": torch.as_tensor(amp_scale, dtype=torch.float32),
             "noise_var_norm": torch.as_tensor(noise_var_norm, dtype=torch.float32),
         }
+
+
+class BTTProfileGroupDataset(Dataset):
+    """
+    Patch groups with shared frequencies and patch-local complex amplitudes.
+
+    Each item is one global parameter group. The group samples one frequency
+    vector, then generates multiple independent BTT patches with independent
+    complex amplitudes. This matches the frequency profile-ELBO setting:
+    global/shared f, patch-local nuisance c.
+    """
+
+    def __init__(
+        self,
+        num_groups,
+        patches_per_group,
+        num_cycles,
+        num_probes,
+        base_freq,
+        fluctuation_delta,
+        probe_angles,
+        freq_lower,
+        freq_upper,
+        amp_real_center,
+        amp_imag_center,
+        amp_relative_half_band,
+        amp_min_half_band,
+        snr_db,
+        seed=0,
+        normalization="per_patch_std",
+    ):
+        self.num_groups = int(num_groups)
+        self.patches_per_group = int(patches_per_group)
+        self.num_cycles = int(num_cycles)
+        self.num_probes = int(num_probes)
+        self.base_freq = float(base_freq)
+        self.fluctuation_delta = float(fluctuation_delta)
+        self.probe_angles = probe_angles
+        self.freq_lower = np.asarray(freq_lower, dtype=np.float64)
+        self.freq_upper = np.asarray(freq_upper, dtype=np.float64)
+        self.amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
+        self.amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
+        self.amp_relative_half_band = float(amp_relative_half_band)
+        self.amp_min_half_band = float(amp_min_half_band)
+        self.snr_db = snr_db
+        self.seed = int(seed)
+        self.normalization = normalization
+
+        if self.num_groups <= 0:
+            raise ValueError("num_groups must be positive")
+        if self.patches_per_group <= 0:
+            raise ValueError("patches_per_group must be positive")
+        if self.freq_lower.shape != self.freq_upper.shape:
+            raise ValueError("freq_lower and freq_upper must have the same shape")
+        if self.amp_real_center.shape != self.freq_lower.shape:
+            raise ValueError("amp_real_center must match frequency shape")
+        if self.amp_imag_center.shape != self.freq_lower.shape:
+            raise ValueError("amp_imag_center must match frequency shape")
+
+    def __len__(self):
+        return self.num_groups
+
+    def _generate_patch(self, rng, freq_hz):
+        amp_real, amp_imag = sample_amplitude_uniform(
+            amp_real_center=self.amp_real_center,
+            amp_imag_center=self.amp_imag_center,
+            relative_half_band=self.amp_relative_half_band,
+            min_half_band=self.amp_min_half_band,
+            rng=rng,
+        )
+        sample = generate_one_btt_sequence(
+            num_cycles=self.num_cycles,
+            base_freq=self.base_freq,
+            fluctuation_delta=self.fluctuation_delta,
+            probe_angles=self.probe_angles,
+            freq_hz=freq_hz,
+            amp_real=amp_real,
+            amp_imag=amp_imag,
+            snr_db=self.snr_db,
+            rng=rng,
+        )
+        return sample, amp_real, amp_imag
+
+    def __getitem__(self, idx):
+        rng = np.random.default_rng(self.seed + int(idx))
+        freq_hz = sample_frequency_uniform(
+            self.freq_lower,
+            self.freq_upper,
+            rng,
+        )
+
+        patch_samples = []
+        amp_real_list = []
+        amp_imag_list = []
+        x_observed_list = []
+        for _ in range(self.patches_per_group):
+            sample, amp_real, amp_imag = self._generate_patch(rng, freq_hz)
+            patch_samples.append(sample)
+            amp_real_list.append(amp_real)
+            amp_imag_list.append(amp_imag)
+            x_observed_list.append(sample["x_observed"])
+
+        if self.normalization in ("per_sequence_std", "per_patch_std"):
+            amp_scales = np.asarray(
+                [float(np.std(x_observed)) for x_observed in x_observed_list],
+                dtype=np.float64,
+            )
+        elif self.normalization == "group_std":
+            group_scale = float(np.std(np.concatenate(x_observed_list)))
+            amp_scales = np.full(self.patches_per_group, group_scale, dtype=np.float64)
+        elif self.normalization in (None, "none"):
+            amp_scales = np.ones(self.patches_per_group, dtype=np.float64)
+        else:
+            raise ValueError(f"Unsupported normalization={self.normalization}")
+        amp_scales = np.maximum(amp_scales, 1e-12)
+
+        x_group = []
+        t_group = []
+        rev_group = []
+        probe_group = []
+        target_group = []
+        noise_var_norm = []
+        for sample, amp_scale in zip(patch_samples, amp_scales):
+            x_observed_norm = sample["x_observed"] / amp_scale
+            features, t_samples, rev_ids, probe_ids = build_btt_point_features(
+                x_observed=x_observed_norm,
+                t_samples=sample["t_samples"],
+                rev_ids=sample["rev_ids"],
+                probe_ids=sample["probe_ids"],
+                theta_samples=sample["theta_samples"],
+                freqs_at_samples=sample["freqs_at_samples"],
+                base_freq=self.base_freq,
+                n_revs=self.num_cycles,
+            )
+            x_group.append(features)
+            t_group.append(t_samples)
+            rev_group.append(rev_ids)
+            probe_group.append(probe_ids)
+            target_group.append(features[:, :2])
+            noise_var_norm.append(float(sample["noise_power"]) / (amp_scale ** 2))
+
+        return {
+            "x": torch.as_tensor(np.stack(x_group, axis=0), dtype=torch.float32),
+            "t": torch.as_tensor(np.stack(t_group, axis=0), dtype=torch.float32),
+            "probe_ids": torch.as_tensor(
+                np.stack(probe_group, axis=0),
+                dtype=torch.long,
+            ),
+            "rev_ids": torch.as_tensor(np.stack(rev_group, axis=0), dtype=torch.long),
+            "target": torch.as_tensor(
+                np.stack(target_group, axis=0),
+                dtype=torch.float32,
+            ),
+            "true_freq_hz": torch.as_tensor(freq_hz, dtype=torch.float32),
+            "true_amp_real": torch.as_tensor(
+                np.stack(amp_real_list, axis=0),
+                dtype=torch.float32,
+            ),
+            "true_amp_imag": torch.as_tensor(
+                np.stack(amp_imag_list, axis=0),
+                dtype=torch.float32,
+            ),
+            "amp_scale": torch.as_tensor(amp_scales, dtype=torch.float32),
+            "noise_var_norm": torch.as_tensor(noise_var_norm, dtype=torch.float32),
+        }
