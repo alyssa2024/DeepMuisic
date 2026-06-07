@@ -7,22 +7,27 @@ Edit values here, then run `main.py`.
 CONFIG = {
     "seed": 42,
     "data": {
-        "dataset_type": "profile_patch_group",
+        "dataset_type": "single_fixed_long_sequence",
         "input_dim": 6,
         "num_harmonics": 4,
         "num_probes": 4,
         "base_freq": 150.0,
         "fluctuation_delta": 0.001,
         "probes": [0, 28, 111.08, 166.15],
-        "num_cycles": 4,
-        "num_train_sequences": 10000,
-        "num_val_sequences": 2000,
-        "num_test_sequences": 2000,
-        "batch_size": 16,
-        "patches_per_group": 4,
-        "normalization": "per_patch_std",
+        "patch_num_cycles": 4,
+        "num_train_patches": 256,
+        "num_val_patches": 64,
+        "num_test_patches": 64,
+        "patch_hop_cycles": 4,
+        "allow_patch_overlap": False,
+        "loader_batch_size": 1,
+        "normalization": "group_std",
     },
     "signal": {
+        "single_instance_parameter_source": "fixed",
+        "true_frequency_hz": [167.0, 341.0, 635.0, 872.0],
+        "true_amp_real": [0.6, 0.5403, -0.3329, -0.8910],
+        "true_amp_imag": [0.0, 0.8415, 0.7274, 0.1270],
         "amp_real_center_m": [0.6, 0.5403, -0.3329, -0.8910],
         "amp_imag_center_m": [0.0, 0.8415, 0.7274, 0.1270],
         "amp_data_prior": {
@@ -52,6 +57,7 @@ CONFIG = {
         },
     },
     "model": {
+        "inference_parameterization": "encoder_fusion",
         "hidden_dim": 128,
         "nhead": 8,
         "num_layers": 2,
@@ -62,6 +68,7 @@ CONFIG = {
     },
     "loss": {
         "beta_freq": 1.0,
+        "reduction": "sum",
         "reconstruction": {
             "type": "complex_gaussian_nll",
             "include_log_const": True,
@@ -73,12 +80,13 @@ CONFIG = {
         "kl": {
             "enabled": True,
             "type": "trunc_normal_to_uniform",
-            "warmup_steps": 100,
+            "warmup_steps": 0,
             "reuse_reconstruction_samples": False,
         },
         "amplitude_prior": {
-            "ridge_from_noise": True,
+            "type": "complex_isotropic_gaussian",
             "tau2_norm": 1.0,
+            "include_map_prior_penalty": True,
         },
         "success": {
             "freq_relative_tol": 0.02,
@@ -91,7 +99,7 @@ CONFIG = {
         "lr": 1e-4,
         "lr_schedule": {
             "type": "warmup_cosine",
-            "warmup_steps": 1000,
+            "warmup_steps": 10,
             "min_lr": 1e-6,
         },
         "grad_clip": {
@@ -100,7 +108,7 @@ CONFIG = {
         },
         "early_stopping": {
             "enabled": True,
-            "monitor": "recon_mse_mean",
+            "monitor": "val_map_profile_core",
             "mode": "min",
             "patience": 3,
             "min_delta": 1e-6,

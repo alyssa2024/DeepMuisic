@@ -3,9 +3,11 @@ import torch
 from torch.utils.data import Dataset
 
 from synthesis_dataset import (
+    generate_complex_harmonic_displacement,
     generate_one_btt_sequence,
     sample_amplitude_uniform,
     sample_frequency_uniform,
+    simulate_fluctuating_speed_btt,
 )
 
 
@@ -335,4 +337,233 @@ class BTTProfileGroupDataset(Dataset):
             ),
             "amp_scale": torch.as_tensor(amp_scales, dtype=torch.float32),
             "noise_var_norm": torch.as_tensor(noise_var_norm, dtype=torch.float32),
+        }
+
+
+class BTTSingleInstanceDataset(Dataset):
+    """
+    A single fixed-parameter long BTT sequence split into non-overlapping patches.
+
+    The whole dataset has exactly one frequency vector and one physical complex
+    amplitude vector. Train/validation/test splits are different time patches
+    from the same continuous sequence, not different parameter draws.
+    """
+
+    def __init__(
+        self,
+        patch_num_cycles,
+        num_train_patches,
+        num_val_patches,
+        num_test_patches,
+        num_probes,
+        base_freq,
+        fluctuation_delta,
+        probe_angles,
+        freq_lower,
+        freq_upper,
+        true_freq_hz,
+        true_amp_real,
+        true_amp_imag,
+        snr_db,
+        seed=0,
+        patch_hop_cycles=None,
+        allow_patch_overlap=False,
+        normalization="group_std",
+        parameter_source="fixed",
+    ):
+        self.patch_num_cycles = int(patch_num_cycles)
+        self.num_train_patches = int(num_train_patches)
+        self.num_val_patches = int(num_val_patches)
+        self.num_test_patches = int(num_test_patches)
+        self.total_patches = (
+            self.num_train_patches + self.num_val_patches + self.num_test_patches
+        )
+        self.num_probes = int(num_probes)
+        self.base_freq = float(base_freq)
+        self.fluctuation_delta = float(fluctuation_delta)
+        self.probe_angles = probe_angles
+        self.freq_lower = np.asarray(freq_lower, dtype=np.float64)
+        self.freq_upper = np.asarray(freq_upper, dtype=np.float64)
+        self.snr_db = snr_db
+        self.seed = int(seed)
+        self.normalization = normalization
+        self.parameter_source = parameter_source
+        self.patch_hop_cycles = (
+            self.patch_num_cycles
+            if patch_hop_cycles is None
+            else int(patch_hop_cycles)
+        )
+        self.allow_patch_overlap = bool(allow_patch_overlap)
+
+        if self.patch_num_cycles <= 0:
+            raise ValueError("patch_num_cycles must be positive")
+        if self.total_patches <= 0:
+            raise ValueError("at least one patch is required")
+        if self.patch_hop_cycles <= 0:
+            raise ValueError("patch_hop_cycles must be positive")
+        if not self.allow_patch_overlap and self.patch_hop_cycles < self.patch_num_cycles:
+            raise ValueError(
+                "patch_hop_cycles must be >= patch_num_cycles when overlap is disabled"
+            )
+
+        rng = np.random.default_rng(self.seed)
+        if parameter_source == "fixed":
+            freq_hz = np.asarray(true_freq_hz, dtype=np.float64)
+        elif parameter_source == "sample_once":
+            freq_hz = sample_frequency_uniform(self.freq_lower, self.freq_upper, rng)
+        else:
+            raise ValueError(
+                "single_instance_parameter_source must be 'fixed' or 'sample_once'"
+            )
+        amp_real = np.asarray(true_amp_real, dtype=np.float64)
+        amp_imag = np.asarray(true_amp_imag, dtype=np.float64)
+
+        if freq_hz.shape != self.freq_lower.shape:
+            raise ValueError("true_freq_hz must match frequency support shape")
+        if amp_real.shape != freq_hz.shape or amp_imag.shape != freq_hz.shape:
+            raise ValueError("true_amp_real/imag must match true_freq_hz shape")
+
+        self.true_freq_hz = freq_hz
+        self.true_amp_real = amp_real
+        self.true_amp_imag = amp_imag
+
+        total_cycles = self.patch_num_cycles + (
+            self.total_patches - 1
+        ) * self.patch_hop_cycles
+        (
+            t_samples,
+            _freqs_per_rev,
+            rev_ids,
+            probe_ids,
+            theta_samples,
+            freqs_at_samples,
+        ) = simulate_fluctuating_speed_btt(
+            n_revs=total_cycles,
+            base_freq_x=self.base_freq,
+            delta=self.fluctuation_delta,
+            probe_angles=self.probe_angles,
+            rng=rng,
+        )
+        x_observed, _x_clean, noise_power = generate_complex_harmonic_displacement(
+            t=t_samples,
+            freqs=freq_hz,
+            amp_real=amp_real,
+            amp_imag=amp_imag,
+            snr_db=snr_db,
+            rng=rng,
+        )
+
+        patch_len = self.patch_num_cycles * self.num_probes
+        hop_len = self.patch_hop_cycles * self.num_probes
+        patches = []
+        for patch_idx in range(self.total_patches):
+            start = patch_idx * hop_len
+            end = start + patch_len
+            if end > len(t_samples):
+                raise RuntimeError("internal patch slicing exceeded long sequence")
+            patches.append(
+                {
+                    "x_observed": x_observed[start:end],
+                    "t_abs": t_samples[start:end],
+                    "rev_ids": rev_ids[start:end],
+                    "probe_ids": probe_ids[start:end],
+                    "theta_samples": theta_samples[start:end],
+                    "freqs_at_samples": freqs_at_samples[start:end],
+                }
+            )
+
+        train_patches = patches[: self.num_train_patches]
+        if normalization == "group_std":
+            train_values = np.concatenate([p["x_observed"] for p in train_patches])
+            amp_scale_group = float(np.std(train_values))
+            patch_scales = np.full(self.total_patches, amp_scale_group, dtype=np.float64)
+        elif normalization == "per_patch_std":
+            patch_scales = np.asarray(
+                [float(np.std(p["x_observed"])) for p in patches],
+                dtype=np.float64,
+            )
+        elif normalization in (None, "none"):
+            patch_scales = np.ones(self.total_patches, dtype=np.float64)
+        else:
+            raise ValueError(f"Unsupported normalization={normalization}")
+        patch_scales = np.maximum(patch_scales, 1e-12)
+        self.normalization_scale = float(patch_scales[0]) if normalization == "group_std" else None
+
+        encoded_patches = [
+            self._encode_patch(patch, patch_scales[i], noise_power)
+            for i, patch in enumerate(patches)
+        ]
+        self._splits = {
+            "train": self._stack_split(encoded_patches[: self.num_train_patches]),
+            "val": self._stack_split(
+                encoded_patches[
+                    self.num_train_patches : self.num_train_patches
+                    + self.num_val_patches
+                ]
+            ),
+            "test": self._stack_split(encoded_patches[-self.num_test_patches :]),
+        }
+
+    def __len__(self):
+        return 1
+
+    def _encode_patch(self, patch, amp_scale, noise_power):
+        x_norm = patch["x_observed"] / amp_scale
+        rev_ids_local = patch["rev_ids"] - patch["rev_ids"][0]
+        features, t_samples, rev_ids, probe_ids = build_btt_point_features(
+            x_observed=x_norm,
+            t_samples=patch["t_abs"],
+            rev_ids=rev_ids_local,
+            probe_ids=patch["probe_ids"],
+            theta_samples=patch["theta_samples"],
+            freqs_at_samples=patch["freqs_at_samples"],
+            base_freq=self.base_freq,
+            n_revs=max(self.patch_num_cycles, 1),
+        )
+        t_abs = t_samples.astype(np.float32)
+        t_local = (t_abs - t_abs[0]).astype(np.float32)
+        return {
+            "x": features,
+            "t_abs": t_abs,
+            "t_local": t_local,
+            "probe_ids": probe_ids,
+            "rev_ids": rev_ids,
+            "target": features[:, :2],
+            "amp_scale": np.float32(amp_scale),
+            "noise_var_norm": np.float32(float(noise_power) / (amp_scale ** 2)),
+            "patch_t0_abs": np.float32(t_abs[0]),
+        }
+
+    @staticmethod
+    def _stack_split(patches):
+        if not patches:
+            raise ValueError("split must contain at least one patch")
+        keys = patches[0].keys()
+        stacked = {}
+        for key in keys:
+            dtype = torch.long if key in ("probe_ids", "rev_ids") else torch.float32
+            stacked[key] = torch.as_tensor(
+                np.stack([patch[key] for patch in patches], axis=0),
+                dtype=dtype,
+            )
+        return stacked
+
+    def __getitem__(self, idx):
+        if int(idx) != 0:
+            raise IndexError("BTTSingleInstanceDataset contains exactly one item")
+        return {
+            "train": self._splits["train"],
+            "val": self._splits["val"],
+            "test": self._splits["test"],
+            "true_freq_hz": torch.as_tensor(self.true_freq_hz, dtype=torch.float32),
+            "true_amp_real": torch.as_tensor(self.true_amp_real, dtype=torch.float32),
+            "true_amp_imag": torch.as_tensor(self.true_amp_imag, dtype=torch.float32),
+            "normalization_scale": torch.as_tensor(
+                1.0 if self.normalization_scale is None else self.normalization_scale,
+                dtype=torch.float32,
+            ),
+            "total_train_patches": torch.as_tensor(
+                self.num_train_patches,
+                dtype=torch.long,
+            ),
         }

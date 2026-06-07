@@ -2,6 +2,58 @@ import torch
 import torch.nn as nn
 
 
+class DirectFrequencyVariationalPosterior(nn.Module):
+    """
+    Direct single-instance variational posterior without a Transformer encoder.
+    """
+
+    is_direct_global_posterior = True
+
+    def __init__(
+        self,
+        output_dim,
+        freq_lower_hz,
+        freq_upper_hz,
+        min_log_rho2=-8.0,
+        max_log_rho2=-2.0,
+    ):
+        super().__init__()
+        self.output_dim = int(output_dim)
+        freq_lower = torch.tensor(freq_lower_hz, dtype=torch.float32)
+        freq_upper = torch.tensor(freq_upper_hz, dtype=torch.float32)
+        if len(freq_lower) != self.output_dim:
+            raise ValueError("freq_lower_hz length must equal output_dim")
+        if torch.any(freq_upper <= freq_lower):
+            raise ValueError("freq_upper_hz must exceed freq_lower_hz")
+        self.register_buffer("freq_lower", freq_lower)
+        self.register_buffer("freq_upper", freq_upper)
+        self.register_buffer("freq_mid", 0.5 * (freq_lower + freq_upper))
+        self.register_buffer("freq_half", 0.5 * (freq_upper - freq_lower))
+        self.register_buffer("f_center", 0.5 * (freq_lower + freq_upper))
+        self.register_buffer("f_band", 0.5 * (freq_upper - freq_lower))
+        self.min_log_rho2 = float(min_log_rho2)
+        self.max_log_rho2 = float(max_log_rho2)
+        self.raw_mu_f = nn.Parameter(torch.zeros(self.output_dim))
+        self.raw_logrho2_f = nn.Parameter(torch.zeros(self.output_dim))
+
+    def forward(self, x=None, probe_ids=None, Cws=None):
+        del x, probe_ids, Cws
+        mu_unit = torch.tanh(self.raw_mu_f)
+        mu_f = self.freq_mid + self.freq_half * mu_unit
+        log_rho2 = self.min_log_rho2 + (
+            self.max_log_rho2 - self.min_log_rho2
+        ) * torch.sigmoid(self.raw_logrho2_f)
+        rho = torch.exp(0.5 * log_rho2)
+        std_f = self.freq_half * rho
+        logvar_f = 2.0 * torch.log(std_f + 1e-12)
+        return (
+            mu_f.view(1, -1),
+            logvar_f.view(1, -1),
+            std_f.view(1, -1),
+            log_rho2.view(1, -1),
+        )
+
+
 class PhysicalHarmonicVAE(nn.Module):
     def __init__(
         self,
@@ -44,6 +96,21 @@ class PhysicalHarmonicVAE(nn.Module):
         mu_global = var_global * (precision_local * mu_local).sum(dim=1)
         std_global = torch.sqrt(var_global.clamp_min(eps))
         return mu_global, std_global
+
+    @staticmethod
+    def compute_fusion_diagnostics(std_local, eps=1e-8):
+        var_local = std_local.clamp_min(eps).pow(2)
+        precision = 1.0 / var_local
+        weights = precision / precision.sum(dim=1, keepdim=True).clamp_min(eps)
+        max_weight = weights.max(dim=1).values
+        effective_patches = 1.0 / weights.pow(2).sum(dim=1).clamp_min(eps)
+        entropy = -(weights * weights.clamp_min(eps).log()).sum(dim=1)
+        return {
+            "fusion_weight": weights,
+            "fusion_max_weight": max_weight,
+            "fusion_effective_num_patches": effective_patches,
+            "fusion_entropy": entropy,
+        }
 
     def build_dictionary(self, f, t):
         """
@@ -126,6 +193,38 @@ class PhysicalHarmonicVAE(nn.Module):
         group_shape = None
         if is_group_input:
             group_size, patches_per_group, seq_len, input_dim = x.shape
+            if group_size != 1:
+                raise ValueError(
+                    "single-instance profile path requires x.shape[0] == 1; "
+                    f"got {group_size}"
+                )
+            if getattr(self.encoder, "is_direct_global_posterior", False):
+                mu_f, logvar_f, std_f, log_rho2_f = self.encoder(
+                    x,
+                    probe_ids=probe_ids,
+                )
+                mu_local = mu_f[:, None, :].expand(group_size, patches_per_group, -1)
+                std_local = std_f[:, None, :].expand(group_size, patches_per_group, -1)
+                outputs = {
+                    "mu_f": mu_f,
+                    "std_f": std_f,
+                    "logvar_f": logvar_f,
+                    "mu_f_local": mu_local,
+                    "std_f_local": std_local,
+                    "logvar_f_local": logvar_f[:, None, :].expand(
+                        group_size,
+                        patches_per_group,
+                        -1,
+                    ),
+                    "log_rho2_f": log_rho2_f,
+                    "log_rho2_f_local": log_rho2_f[:, None, :].expand(
+                        group_size,
+                        patches_per_group,
+                        -1,
+                    ),
+                }
+                outputs.update(self.compute_fusion_diagnostics(std_local))
+                return outputs
             group_shape = (group_size, patches_per_group)
             x_encoder = x.reshape(group_size * patches_per_group, seq_len, input_dim)
             if probe_ids is not None:
@@ -170,6 +269,7 @@ class PhysicalHarmonicVAE(nn.Module):
                     -1,
                 )
                 outputs["log_rho2_f_mean"] = outputs["log_rho2_f_local"].mean(dim=1)
+            outputs.update(self.compute_fusion_diagnostics(std_local))
             return outputs
 
         outputs = {

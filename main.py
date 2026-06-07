@@ -7,12 +7,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import CONFIG
-from dataset import BTTProfileGroupDataset, BTTSequenceDataset
+from dataset import BTTProfileGroupDataset, BTTSingleInstanceDataset, BTTSequenceDataset
 from Encoder import VariationalIndependentTimeSeriesTransformer
-from eval import evaluate_model
+from eval import evaluate_model, evaluate_single_instance_splits
 from loss import compute_harmonic_loss
 from synthesis_dataset import compute_frequency_support
-from VAE import PhysicalHarmonicVAE
+from VAE import DirectFrequencyVariationalPosterior, PhysicalHarmonicVAE
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -194,6 +194,28 @@ def _build_metrics_payload(
 def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_upper):
     amp_prior_cfg = signal_cfg["amp_data_prior"]
     dataset_type = data_cfg.get("dataset_type", "profile_patch_group")
+    if dataset_type == "single_fixed_long_sequence":
+        return BTTSingleInstanceDataset(
+            patch_num_cycles=data_cfg["patch_num_cycles"],
+            num_train_patches=data_cfg["num_train_patches"],
+            num_val_patches=data_cfg["num_val_patches"],
+            num_test_patches=data_cfg["num_test_patches"],
+            num_probes=data_cfg["num_probes"],
+            base_freq=data_cfg["base_freq"],
+            fluctuation_delta=data_cfg["fluctuation_delta"],
+            probe_angles=data_cfg["probes"],
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            true_freq_hz=signal_cfg.get("true_frequency_hz", freq_cfg_fallback(freq_lower, freq_upper)),
+            true_amp_real=signal_cfg.get("true_amp_real", signal_cfg["amp_real_center_m"]),
+            true_amp_imag=signal_cfg.get("true_amp_imag", signal_cfg["amp_imag_center_m"]),
+            snr_db=signal_cfg["snr_db"],
+            seed=seed,
+            patch_hop_cycles=data_cfg.get("patch_hop_cycles", data_cfg["patch_num_cycles"]),
+            allow_patch_overlap=data_cfg.get("allow_patch_overlap", False),
+            normalization=data_cfg.get("normalization", "group_std"),
+            parameter_source=signal_cfg.get("single_instance_parameter_source", "fixed"),
+        )
     if dataset_type == "profile_patch_group":
         return BTTProfileGroupDataset(
             num_groups=num_sequences,
@@ -216,7 +238,8 @@ def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_u
     if dataset_type != "independent_sequence":
         raise ValueError(
             "data.dataset_type must be one of "
-            "'profile_patch_group', 'independent_sequence'"
+            "'single_fixed_long_sequence', 'profile_patch_group', "
+            "'independent_sequence'"
         )
     return BTTSequenceDataset(
         num_sequences=num_sequences,
@@ -235,6 +258,231 @@ def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_u
         seed=seed,
         normalization=data_cfg.get("normalization", "per_sequence_std"),
     )
+
+
+def freq_cfg_fallback(freq_lower, freq_upper):
+    return (np.asarray(freq_lower) + np.asarray(freq_upper)) * 0.5
+
+
+def _move_split_to_device(split, device):
+    return {
+        key: value.to(device) if torch.is_tensor(value) else value
+        for key, value in split.items()
+    }
+
+
+def _build_model(data_cfg, freq_cfg, model_cfg, freq_lower, freq_upper, device):
+    posterior_cfg = freq_cfg.get("posterior", {})
+    inference_parameterization = model_cfg.get(
+        "inference_parameterization",
+        "encoder_fusion",
+    )
+    if inference_parameterization == "direct_global":
+        encoder = DirectFrequencyVariationalPosterior(
+            output_dim=data_cfg["num_harmonics"],
+            freq_lower_hz=freq_lower,
+            freq_upper_hz=freq_upper,
+            min_log_rho2=posterior_cfg.get("min_log_rho2", -8.0),
+            max_log_rho2=posterior_cfg.get("max_log_rho2", -2.0),
+        )
+    elif inference_parameterization == "encoder_fusion":
+        encoder = VariationalIndependentTimeSeriesTransformer(
+            input_dim=data_cfg["input_dim"],
+            output_dim=data_cfg["num_harmonics"],
+            hidden_dim=model_cfg["hidden_dim"],
+            nhead=model_cfg["nhead"],
+            num_layers=model_cfg["num_layers"],
+            dim_feedforward=model_cfg["dim_feedforward"],
+            hidden_dim_dense=model_cfg["hidden_dim_dense"],
+            num_probes=data_cfg["num_probes"],
+            use_standard_pe=model_cfg["use_standard_pe"],
+            device=device,
+            freq_lower_hz=freq_lower,
+            freq_upper_hz=freq_upper,
+            min_log_rho2=posterior_cfg.get("min_log_rho2", -12.0),
+            max_log_rho2=posterior_cfg.get("max_log_rho2", -4.0),
+        )
+    else:
+        raise ValueError(
+            "model.inference_parameterization must be 'encoder_fusion' "
+            "or 'direct_global'"
+        )
+    return PhysicalHarmonicVAE(
+        encoder=encoder,
+        ls_ridge=model_cfg.get("ls_ridge", 1e-6),
+    ).to(device)
+
+
+def _run_single_instance(
+    data_cfg,
+    signal_cfg,
+    freq_cfg,
+    model_cfg,
+    train_cfg,
+    loss_cfg,
+    eval_cfg,
+    seed,
+    run_dir,
+    freq_lower,
+    freq_upper,
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    dataset = _build_dataset(
+        num_sequences=1,
+        seed=seed,
+        data_cfg=data_cfg,
+        signal_cfg=signal_cfg,
+        freq_lower=freq_lower,
+        freq_upper=freq_upper,
+    )
+    sample = dataset[0]
+    train_split = _move_split_to_device(sample["train"], device)
+    total_train_patches = int(sample["total_train_patches"].item())
+    print(
+        "Single-instance dataset: "
+        f"train_patches={total_train_patches}, "
+        f"val_patches={sample['val']['x'].shape[0]}, "
+        f"test_patches={sample['test']['x'].shape[0]}, "
+        f"patch_length={sample['train']['x'].shape[1]}"
+    )
+
+    model = _build_model(data_cfg, freq_cfg, model_cfg, freq_lower, freq_upper, device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=float(train_cfg["lr"]))
+    (
+        lr_schedule_type,
+        lr_total_steps,
+        lr_warmup_steps,
+        lr_min,
+    ) = _resolve_lr_schedule(train_cfg, steps_per_epoch=1)
+    eval_every = int(eval_cfg.get("eval_every", 5))
+    history = {}
+    best_metrics = None
+    final_metrics = None
+    total_steps = 0
+
+    ckpt_cfg = CONFIG.get("checkpoint", {})
+    ckpt_dir = ckpt_cfg.get("dir", "checkpoints")
+    ckpt_name = ckpt_cfg.get("name", "latest.pt")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    os.makedirs(run_dir, exist_ok=True)
+
+    x_train = train_split["x"].unsqueeze(0)
+    t_train = train_split["t_local"].unsqueeze(0)
+    probe_train = train_split["probe_ids"].unsqueeze(0)
+    target_train = train_split["target"].unsqueeze(0)
+    noise_train = train_split["noise_var_norm"].unsqueeze(0)
+    amp_scale_train = train_split["amp_scale"].unsqueeze(0)
+
+    for epoch in range(int(train_cfg["epochs"])):
+        model.train()
+        optimizer.zero_grad()
+        outputs = model(x_train, t_train, probe_ids=probe_train)
+        loss, recon, freq_kl, loss_diag = compute_harmonic_loss(
+            x_target=target_train,
+            model_outputs=outputs,
+            model=model,
+            t=t_train,
+            loss_cfg=loss_cfg,
+            noise_var_norm=noise_train,
+            amp_scale=amp_scale_train,
+            total_num_patches=total_train_patches,
+            global_step=total_steps + 1,
+        )
+        if not torch.isfinite(loss):
+            print(f"epoch={epoch:04d} skipped non-finite loss")
+            continue
+        loss.backward()
+        grad_clip_cfg = train_cfg.get("grad_clip", {})
+        if grad_clip_cfg.get("enabled", False):
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=float(grad_clip_cfg.get("max_norm", 1.0)),
+            )
+        step_lr = _compute_learning_rate(
+            base_lr=float(train_cfg["lr"]),
+            step=total_steps + 1,
+            schedule_type=lr_schedule_type,
+            total_steps=lr_total_steps,
+            warmup_steps=lr_warmup_steps,
+            min_lr=lr_min,
+        )
+        _set_optimizer_lr(optimizer, step_lr)
+        optimizer.step()
+        total_steps += 1
+        print(
+            f"epoch={epoch:04d} "
+            f"loss={loss.item():.6f} "
+            f"map_core={loss_diag['map_profile_core'].item():.6f} "
+            f"data_nll={loss_diag['data_nll_core'].item():.6f} "
+            f"amp_prior={loss_diag['amp_map_prior_core'].item():.6f} "
+            f"freq_kl={loss_diag['freq_kl'].item():.6f} "
+            f"posterior_std={loss_diag['posterior_std_hz_mean'].item():.4f} "
+            f"lr={step_lr:.3e}"
+        )
+
+        need_eval = (
+            epoch == 0
+            or (epoch + 1) % eval_every == 0
+            or epoch == int(train_cfg["epochs"]) - 1
+        )
+        if need_eval:
+            eval_sample = {
+                "train": sample["train"],
+                "val": sample["val"],
+                "test": sample["test"],
+                "true_freq_hz": sample["true_freq_hz"],
+                "true_amp_real": sample["true_amp_real"],
+                "true_amp_imag": sample["true_amp_imag"],
+                "total_train_patches": sample["total_train_patches"],
+            }
+            metrics = evaluate_single_instance_splits(
+                model=model,
+                sample=eval_sample,
+                device=device,
+                loss_cfg=loss_cfg,
+            )
+            metrics["epoch"] = epoch + 1
+            metrics["total_steps"] = total_steps
+            metrics["seed"] = seed
+            final_metrics = metrics
+            if best_metrics is None or metrics["val_map_profile_core"] < best_metrics[
+                "val_map_profile_core"
+            ]:
+                best_metrics = dict(metrics)
+            print(
+                "[EVAL] "
+                f"epoch={epoch:04d} "
+                f"val_map_core={metrics['val_map_profile_core']:.6f} "
+                f"test_map_core={metrics['test_map_profile_core']:.6f} "
+                f"freq_rmse={metrics['freq_rmse_hz_mean']:.4f} "
+                f"std={metrics['posterior_std_hz_mean']:.4f} "
+                f"fusion_eff={metrics.get('fusion_effective_num_patches_mean', 0.0):.2f}"
+            )
+            metrics_path = os.path.join(run_dir, "metrics.json")
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "last_metrics": final_metrics,
+                        "best_metrics": best_metrics,
+                    },
+                    f,
+                    indent=2,
+                )
+
+    latest_ckpt = os.path.join(ckpt_dir, ckpt_name)
+    save_checkpoint(
+        path=latest_ckpt,
+        model=model,
+        optimizer=optimizer,
+        epoch=int(train_cfg["epochs"]) - 1,
+        total_steps=total_steps,
+        nonfinite_steps=0,
+        grad_clip_triggered_steps=0,
+        epoch_to_target=None,
+    )
+    print(f"Saved checkpoint: {latest_ckpt}")
+    return final_metrics
 
 
 def main():
@@ -260,6 +508,22 @@ def main():
     )
     print(f"Frequency centers: {freq_center}")
     print(f"Frequency half bands: {freq_half_band}")
+
+    if data_cfg.get("dataset_type") == "single_fixed_long_sequence":
+        _run_single_instance(
+            data_cfg=data_cfg,
+            signal_cfg=signal_cfg,
+            freq_cfg=freq_cfg,
+            model_cfg=model_cfg,
+            train_cfg=train_cfg,
+            loss_cfg=loss_cfg,
+            eval_cfg=eval_cfg,
+            seed=seed,
+            run_dir=run_dir,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+        )
+        return
 
     train_set = _build_dataset(
         num_sequences=data_cfg["num_train_sequences"],

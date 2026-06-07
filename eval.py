@@ -4,6 +4,7 @@ import torch
 
 from loss import (
     compute_group_profile_recon_loss,
+    compute_harmonic_loss,
     compute_sequence_posterior_recon_loss,
     kl_trunc_normal_trunc_normal,
     kl_trunc_normal_uniform,
@@ -64,6 +65,136 @@ def _compute_freq_kl(mu_f, std_f, model, loss_cfg):
             upper=model.encoder.freq_upper,
         )
     raise ValueError(f"Unsupported loss.kl.type={kl_type!r}")
+
+
+def _to_single_instance_batch(split, device):
+    return {
+        key: value.to(device)
+        for key, value in split.items()
+        if torch.is_tensor(value)
+    }
+
+
+def evaluate_single_instance_splits(
+    model: torch.nn.Module,
+    sample: Dict,
+    device: torch.device,
+    loss_cfg: Dict,
+) -> Dict[str, float]:
+    model.eval()
+    train = _to_single_instance_batch(sample["train"], device)
+    true_freq = sample["true_freq_hz"].to(device)
+    true_amp = torch.complex(
+        sample["true_amp_real"].to(device),
+        sample["true_amp_imag"].to(device),
+    )
+    total_train_patches = int(sample["total_train_patches"].item())
+    x_train = train["x"].unsqueeze(0)
+    t_train = train["t_local"].unsqueeze(0)
+    probe_train = train["probe_ids"].unsqueeze(0)
+    target_train = train["target"].unsqueeze(0)
+    noise_train = train["noise_var_norm"].unsqueeze(0)
+    amp_scale_train = train["amp_scale"].unsqueeze(0)
+
+    with torch.no_grad():
+        outputs = model(x_train, t_train, probe_ids=probe_train)
+        train_loss, _train_recon, _train_kl, train_diag = compute_harmonic_loss(
+            x_target=target_train,
+            model_outputs=outputs,
+            model=model,
+            t=t_train,
+            loss_cfg=loss_cfg,
+            noise_var_norm=noise_train,
+            amp_scale=amp_scale_train,
+            total_num_patches=total_train_patches,
+        )
+
+        metrics = {
+            "loss": float(train_loss.item()),
+            "train_loss": float(train_loss.item()),
+        }
+        for prefix, split_name in (
+            ("train", "train"),
+            ("val", "val"),
+            ("test", "test"),
+        ):
+            split = train if split_name == "train" else _to_single_instance_batch(
+                sample[split_name],
+                device,
+            )
+            target = split["target"].unsqueeze(0)
+            t_local = split["t_local"].unsqueeze(0)
+            noise_var = split["noise_var_norm"].unsqueeze(0)
+            amp_scale = split["amp_scale"].unsqueeze(0)
+            split_loss, _split_recon, _split_kl, split_diag = compute_harmonic_loss(
+                x_target=target,
+                model_outputs=outputs,
+                model=model,
+                t=t_local,
+                loss_cfg=loss_cfg,
+                noise_var_norm=noise_var,
+                amp_scale=amp_scale,
+                total_num_patches=target.shape[1],
+            )
+            metrics[f"{prefix}_loss"] = float(split_loss.item())
+            metrics[f"{prefix}_data_nll_core"] = float(
+                split_diag["data_nll_core"].item()
+            )
+            metrics[f"{prefix}_amp_map_prior_core"] = float(
+                split_diag["amp_map_prior_core"].item()
+            )
+            metrics[f"{prefix}_map_profile_core"] = float(
+                split_diag["map_profile_core"].item()
+            )
+            metrics[f"{prefix}_recon_mse_sampled"] = float(
+                split_diag["recon_mse_sampled"].item()
+            )
+            metrics[f"{prefix}_map_lambda_mean"] = float(
+                split_diag.get("map_lambda_mean", torch.tensor(0.0)).item()
+            )
+
+        lower = model.encoder.freq_lower.to(device=device, dtype=outputs["mu_f"].dtype)
+        upper = model.encoder.freq_upper.to(device=device, dtype=outputs["mu_f"].dtype)
+        freq_half = (upper - lower) / 2.0
+        mu_f = outputs["mu_f"].squeeze(0)
+        std_f = outputs["std_f"].squeeze(0)
+        freq_err = mu_f - true_freq
+        freq_norm_err = freq_err / (freq_half + 1e-12)
+        metrics.update(
+            {
+                "freq_rmse_hz_mean": float(torch.sqrt(freq_err.pow(2).mean()).item()),
+                "freq_nrmse_band_mean": float(
+                    torch.sqrt(freq_norm_err.pow(2).mean()).item()
+                ),
+                "posterior_std_hz_mean": float(std_f.mean().item()),
+                "posterior_std_rel_mean": float((std_f / (freq_half + 1e-12)).mean().item()),
+                "freq_kl": float(train_diag["freq_kl"].item()),
+                "freq_kl_raw": float(train_diag["freq_kl_raw"].item()),
+                "recon_mse_mean": metrics["val_recon_mse_sampled"],
+                "recon_mse_sampled": metrics["val_recon_mse_sampled"],
+                "recon_nll_sampled": metrics["val_data_nll_core"],
+                "recon_nll_full": float(train_diag["recon_nll_full"].item()),
+            }
+        )
+        for k, value in enumerate(mu_f.detach().cpu().tolist(), start=1):
+            metrics[f"global_freq_mu_h{k}_hz"] = float(value)
+        for k, value in enumerate(std_f.detach().cpu().tolist(), start=1):
+            metrics[f"global_freq_std_h{k}_hz"] = float(value)
+        coverage68 = (torch.abs(freq_err) <= std_f).float().mean()
+        coverage95 = (torch.abs(freq_err) <= 1.96 * std_f).float().mean()
+        metrics["global_freq_coverage_68"] = float(coverage68.item())
+        metrics["global_freq_coverage_95"] = float(coverage95.item())
+        if "fusion_max_weight" in outputs:
+            max_weight = outputs["fusion_max_weight"].squeeze(0)
+            eff = outputs["fusion_effective_num_patches"].squeeze(0)
+            metrics["fusion_max_weight_mean"] = float(max_weight.mean().item())
+            metrics["fusion_effective_num_patches_mean"] = float(eff.mean().item())
+            for k, value in enumerate(max_weight.detach().cpu().tolist(), start=1):
+                metrics[f"fusion_max_weight_h{k}"] = float(value)
+            for k, value in enumerate(eff.detach().cpu().tolist(), start=1):
+                metrics[f"fusion_effective_num_patches_h{k}"] = float(value)
+        metrics["true_amp_norm_mean"] = float(torch.abs(true_amp).mean().item())
+    return metrics
 
 
 def _evaluate_group_profile_model(

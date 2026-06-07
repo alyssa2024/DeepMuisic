@@ -213,17 +213,63 @@ def compute_beta_anneal(loss_cfg, step=None):
 
 
 def resolve_profile_ls_ridge(loss_cfg, fallback_ridge, noise_var_norm=None):
+    ridge_lambda, _tau2_norm, _include_penalty = resolve_profile_amp_prior(
+        loss_cfg=loss_cfg,
+        fallback_ridge=fallback_ridge,
+        noise_var_norm=noise_var_norm,
+        amp_scale=None,
+    )
+    return ridge_lambda
+
+
+def resolve_profile_amp_prior(
+    loss_cfg,
+    fallback_ridge,
+    noise_var_norm=None,
+    amp_scale=None,
+):
     amp_prior_cfg = loss_cfg.get("amplitude_prior", {})
-    if not bool(amp_prior_cfg.get("ridge_from_noise", False)):
-        return fallback_ridge
+    include_penalty = bool(amp_prior_cfg.get("include_map_prior_penalty", False))
+    ridge_from_noise = bool(
+        amp_prior_cfg.get(
+            "ridge_from_noise",
+            amp_prior_cfg.get("type") == "complex_isotropic_gaussian",
+        )
+    )
+    if not ridge_from_noise:
+        return fallback_ridge, None, include_penalty
     if noise_var_norm is None:
         raise ValueError(
             "loss.amplitude_prior.ridge_from_noise=True requires noise_var_norm"
         )
-    tau2 = float(amp_prior_cfg.get("tau2_norm", 1.0))
-    if tau2 <= 0.0:
-        raise ValueError("loss.amplitude_prior.tau2_norm must be positive")
-    return noise_var_norm / tau2
+    has_tau2_norm = "tau2_norm" in amp_prior_cfg
+    has_tau2_physical = "tau2_physical" in amp_prior_cfg
+    if has_tau2_norm and has_tau2_physical:
+        raise ValueError(
+            "Configure only one of amplitude_prior.tau2_norm or tau2_physical"
+        )
+    if has_tau2_physical:
+        if amp_scale is None:
+            raise ValueError(
+                "amplitude_prior.tau2_physical requires amp_scale for normalization"
+            )
+        tau2 = float(amp_prior_cfg["tau2_physical"])
+        if tau2 <= 0.0:
+            raise ValueError("loss.amplitude_prior.tau2_physical must be positive")
+        amp_scale_t = amp_scale.to(
+            device=noise_var_norm.device,
+            dtype=noise_var_norm.dtype,
+        )
+        tau2_norm = tau2 / amp_scale_t.pow(2)
+    else:
+        tau2 = float(amp_prior_cfg.get("tau2_norm", 1.0))
+        if tau2 <= 0.0:
+            raise ValueError("loss.amplitude_prior.tau2_norm must be positive")
+        tau2_norm = torch.ones_like(noise_var_norm) * tau2
+    ridge_lambda = noise_var_norm / tau2_norm.clamp_min(1e-12)
+    if torch.any(ridge_lambda <= 0):
+        raise ValueError("MAP-LS lambda must be positive for every patch")
+    return ridge_lambda, tau2_norm, include_penalty
 
 
 def sample_sequence_frequencies(mu_f, std_f, num_samples, freq_lower, freq_upper):
@@ -367,6 +413,8 @@ def compute_group_profile_recon_loss(
     model,
     sequence_posterior_samples,
     ridge_lambda,
+    tau2_norm=None,
+    include_amp_prior_penalty=False,
     f_samples=None,
     noise_var_norm=None,
     include_log_const=True,
@@ -382,7 +430,7 @@ def compute_group_profile_recon_loss(
         std_f:     [G, K] fused global posterior std
 
     Returns:
-        mean over groups of full/profile complex Gaussian NLL.
+        MAP-profile objective over a single-instance compatible batch.
     """
     if y_complex.ndim != 3:
         raise ValueError(f"y_complex must be [G, P, L], got {y_complex.shape}")
@@ -469,14 +517,39 @@ def compute_group_profile_recon_loss(
             )
     noise_var = noise_var.clamp_min(eps)
 
-    recon_core_per_sample_group = (
+    data_core_per_sample_group = (
         sqerr / noise_var.view(1, group_size, patches_per_group, 1)
     ).sum(dim=(2, 3))
-    recon_nll_core = recon_core_per_sample_group.mean()
+    data_nll_core = data_core_per_sample_group.mean()
+
+    amp_prior_core = torch.zeros((), device=y_complex.device, dtype=sqerr.dtype)
+    amp_prior_log_const = torch.zeros((), device=y_complex.device, dtype=sqerr.dtype)
+    if include_amp_prior_penalty:
+        if tau2_norm is None:
+            raise ValueError(
+                "include_amp_prior_penalty=True requires tau2_norm with shape [G, P]"
+            )
+        tau2 = tau2_norm.to(device=y_complex.device, dtype=sqerr.dtype)
+        if tau2.shape != y_complex.shape[:2]:
+            raise ValueError(f"tau2_norm must have shape [G, P], got {tau2.shape}")
+        tau2 = tau2.clamp_min(eps)
+        amp_prior_per_sample_group = (
+            torch.abs(c_hat_samples) ** 2 / tau2.view(1, group_size, patches_per_group, 1)
+        ).sum(dim=(2, 3))
+        amp_prior_core = amp_prior_per_sample_group.mean()
+        amp_prior_log_const = (
+            c_hat_samples.shape[-1] * torch.log(math.pi * tau2).sum(dim=1)
+        ).mean()
+
+    map_profile_core = data_nll_core + amp_prior_core
     log_const_per_group = seq_len * torch.log(math.pi * noise_var).sum(dim=1)
-    log_const = log_const_per_group.mean()
-    recon_nll_full = recon_nll_core + log_const
-    recon_loss = recon_nll_full if include_log_const else recon_nll_core
+    data_log_const = log_const_per_group.mean()
+    full_map_profile_objective = (
+        map_profile_core + data_log_const + amp_prior_log_const
+    )
+    recon_loss = (
+        full_map_profile_objective if include_log_const else map_profile_core
+    )
 
     amp_norm = torch.linalg.norm(c_hat_samples, dim=-1)
     diagnostics = {
@@ -484,9 +557,14 @@ def compute_group_profile_recon_loss(
         "y_hat_samples": y_hat_samples,
         "c_hat_samples": c_hat_samples,
         "recon_mse_sampled": recon_mse,
-        "recon_nll": recon_nll_core,
-        "recon_nll_full": recon_nll_full,
-        "recon_log_const": log_const,
+        "recon_nll": data_nll_core,
+        "recon_nll_full": data_nll_core + data_log_const,
+        "data_nll_core": data_nll_core,
+        "amp_map_prior_core": amp_prior_core,
+        "map_profile_core": map_profile_core,
+        "data_log_const": data_log_const,
+        "amplitude_prior_log_const": amp_prior_log_const,
+        "full_map_profile_objective": full_map_profile_objective,
         "noise_var_norm_mean": noise_var.mean(),
         "noise_var_norm_min": noise_var.min(),
         "noise_var_norm_max": noise_var.max(),
@@ -496,6 +574,11 @@ def compute_group_profile_recon_loss(
         "ls_amp_norm_mean": amp_norm.mean(),
         "ls_amp_norm_p95": torch.quantile(amp_norm.reshape(-1), 0.95),
     }
+    if torch.is_tensor(ridge_lambda):
+        ridge_diag = ridge_lambda.to(device=y_complex.device, dtype=sqerr.dtype)
+        diagnostics["map_lambda_mean"] = ridge_diag.mean()
+        diagnostics["map_lambda_min"] = ridge_diag.min()
+        diagnostics["map_lambda_max"] = ridge_diag.max()
 
     return recon_loss, diagnostics
 
@@ -525,6 +608,8 @@ def compute_harmonic_loss(
     t,
     loss_cfg,
     noise_var_norm=None,
+    amp_scale=None,
+    total_num_patches=None,
     global_step=None,
 ):
     """
@@ -541,13 +626,19 @@ def compute_harmonic_loss(
     include_log_const = bool(rec_cfg.get("include_log_const", False))
     y_complex = torch.complex(x_target[..., 0], x_target[..., 1])
     is_group_profile = x_target.ndim == 4
-    ridge_lambda = resolve_profile_ls_ridge(
+    ridge_lambda, tau2_norm, include_amp_prior_penalty = resolve_profile_amp_prior(
         loss_cfg=loss_cfg,
         fallback_ridge=model.ls_ridge,
         noise_var_norm=noise_var_norm,
+        amp_scale=amp_scale,
     )
 
     if is_group_profile:
+        if x_target.shape[0] != 1:
+            raise ValueError(
+                "single-instance loss requires x_target.shape[0] == 1; "
+                f"got {x_target.shape[0]}"
+            )
         recon_loss, recon_diag = compute_group_profile_recon_loss(
             y_complex=y_complex,
             t=t,
@@ -556,6 +647,8 @@ def compute_harmonic_loss(
             model=model,
             sequence_posterior_samples=s_seq,
             ridge_lambda=ridge_lambda,
+            tau2_norm=tau2_norm,
+            include_amp_prior_penalty=include_amp_prior_penalty,
             noise_var_norm=noise_var_norm,
             include_log_const=include_log_const,
         )
@@ -610,10 +703,43 @@ def compute_harmonic_loss(
     beta_freq = float(loss_cfg.get("beta_freq", 1.0))
     beta_anneal = compute_beta_anneal(loss_cfg=loss_cfg, step=global_step)
     freq_kl_weighted = beta_anneal * freq_kl_raw
-    loss = recon_loss + beta_freq * freq_kl_weighted
+    likelihood_scale = 1.0
+    objective_num_points = None
+    if is_group_profile:
+        minibatch_patches = int(x_target.shape[1])
+        if total_num_patches is None:
+            total_num_patches = minibatch_patches
+        total_num_patches = int(total_num_patches)
+        if total_num_patches <= 0:
+            raise ValueError("total_num_patches must be positive")
+        likelihood_scale = float(total_num_patches) / float(minibatch_patches)
+        objective_num_points = total_num_patches * int(x_target.shape[2])
+    loss_unreduced = likelihood_scale * recon_loss + beta_freq * freq_kl_weighted
+    reduction = loss_cfg.get("reduction", "sum")
+    if reduction == "sum":
+        loss = loss_unreduced
+        reduction_scale = 1.0
+    elif reduction == "per_complex_observation":
+        if objective_num_points is None:
+            objective_num_points = int(x_target.shape[0] * x_target.shape[1])
+        reduction_scale = 1.0 / float(max(objective_num_points, 1))
+        loss = loss_unreduced * reduction_scale
+    else:
+        raise ValueError("loss.reduction must be 'sum' or 'per_complex_observation'")
 
     diagnostics = {
-        "loss": loss.detach(),
+        "loss": loss_unreduced.detach(),
+        "optimization_loss": loss.detach(),
+        "loss_reduction_scale": torch.as_tensor(
+            reduction_scale,
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
+        "likelihood_scale": torch.as_tensor(
+            likelihood_scale,
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
         "recon_loss": recon_loss.detach(),
         "freq_kl": freq_kl_weighted.detach(),
         "freq_kl_raw": freq_kl_raw.detach(),
