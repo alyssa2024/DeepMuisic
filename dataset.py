@@ -352,9 +352,6 @@ class BTTSingleInstanceDataset(Dataset):
     def __init__(
         self,
         patch_num_cycles,
-        num_train_patches,
-        num_val_patches,
-        num_test_patches,
         num_probes,
         base_freq,
         fluctuation_delta,
@@ -366,18 +363,47 @@ class BTTSingleInstanceDataset(Dataset):
         true_amp_imag,
         snr_db,
         seed=0,
+        num_total_patches=None,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        test_fraction=0.2,
+        num_train_patches=None,
+        num_val_patches=None,
+        num_test_patches=None,
         patch_hop_cycles=None,
         allow_patch_overlap=False,
         normalization="group_std",
         parameter_source="fixed",
     ):
         self.patch_num_cycles = int(patch_num_cycles)
-        self.num_train_patches = int(num_train_patches)
-        self.num_val_patches = int(num_val_patches)
-        self.num_test_patches = int(num_test_patches)
-        self.total_patches = (
-            self.num_train_patches + self.num_val_patches + self.num_test_patches
-        )
+        if num_total_patches is None:
+            if (
+                num_train_patches is None
+                or num_val_patches is None
+                or num_test_patches is None
+            ):
+                raise ValueError(
+                    "Either num_total_patches or all explicit split patch counts "
+                    "must be provided"
+                )
+            self.num_train_patches = int(num_train_patches)
+            self.num_val_patches = int(num_val_patches)
+            self.num_test_patches = int(num_test_patches)
+            self.total_patches = (
+                self.num_train_patches
+                + self.num_val_patches
+                + self.num_test_patches
+            )
+        else:
+            self.total_patches = int(num_total_patches)
+            self.num_train_patches, self.num_val_patches, self.num_test_patches = (
+                self._resolve_split_counts(
+                    total_patches=self.total_patches,
+                    train_fraction=train_fraction,
+                    val_fraction=val_fraction,
+                    test_fraction=test_fraction,
+                )
+            )
         self.num_probes = int(num_probes)
         self.base_freq = float(base_freq)
         self.fluctuation_delta = float(fluctuation_delta)
@@ -506,6 +532,38 @@ class BTTSingleInstanceDataset(Dataset):
 
     def __len__(self):
         return 1
+
+    @staticmethod
+    def _resolve_split_counts(
+        total_patches,
+        train_fraction,
+        val_fraction,
+        test_fraction,
+    ):
+        total_patches = int(total_patches)
+        if total_patches < 3:
+            raise ValueError("num_total_patches must be at least 3")
+        fractions = np.asarray(
+            [train_fraction, val_fraction, test_fraction],
+            dtype=np.float64,
+        )
+        if np.any(fractions <= 0):
+            raise ValueError("train/val/test fractions must be positive")
+        fractions = fractions / fractions.sum()
+        raw = fractions * total_patches
+        counts = np.floor(raw).astype(np.int64)
+        counts = np.maximum(counts, 1)
+        while counts.sum() > total_patches:
+            idx = int(np.argmax(counts))
+            if counts[idx] <= 1:
+                raise ValueError("Cannot allocate at least one patch per split")
+            counts[idx] -= 1
+        remainders = raw - np.floor(raw)
+        for idx in np.argsort(-remainders):
+            if counts.sum() >= total_patches:
+                break
+            counts[int(idx)] += 1
+        return tuple(int(x) for x in counts)
 
     def _encode_patch(self, patch, amp_scale, noise_power):
         x_norm = patch["x_observed"] / amp_scale

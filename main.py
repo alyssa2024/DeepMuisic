@@ -197,9 +197,13 @@ def _build_dataset(num_sequences, seed, data_cfg, signal_cfg, freq_lower, freq_u
     if dataset_type == "single_fixed_long_sequence":
         return BTTSingleInstanceDataset(
             patch_num_cycles=data_cfg["patch_num_cycles"],
-            num_train_patches=data_cfg["num_train_patches"],
-            num_val_patches=data_cfg["num_val_patches"],
-            num_test_patches=data_cfg["num_test_patches"],
+            num_total_patches=data_cfg.get("num_total_patches"),
+            train_fraction=data_cfg.get("train_fraction", 0.6),
+            val_fraction=data_cfg.get("val_fraction", 0.2),
+            test_fraction=data_cfg.get("test_fraction", 0.2),
+            num_train_patches=data_cfg.get("num_train_patches"),
+            num_val_patches=data_cfg.get("num_val_patches"),
+            num_test_patches=data_cfg.get("num_test_patches"),
             num_probes=data_cfg["num_probes"],
             base_freq=data_cfg["base_freq"],
             fluctuation_delta=data_cfg["fluctuation_delta"],
