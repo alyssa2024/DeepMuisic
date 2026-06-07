@@ -8,6 +8,7 @@ from loss import (
     compute_sequence_posterior_recon_loss,
     kl_trunc_normal_trunc_normal,
     kl_trunc_normal_uniform,
+    resolve_profile_amp_prior,
     resolve_profile_ls_ridge,
 )
 
@@ -113,6 +114,7 @@ def evaluate_single_instance_splits(
             "loss": float(train_loss.item()),
             "train_loss": float(train_loss.item()),
         }
+        split_amp_ok = {}
         for prefix, split_name in (
             ("train", "train"),
             ("val", "val"),
@@ -155,6 +157,47 @@ def evaluate_single_instance_splits(
             metrics[f"{prefix}_map_lambda_mean"] = float(
                 split_diag.get("map_lambda_mean", torch.tensor(0.0)).item()
             )
+            ridge_lambda, _tau2_norm, _include_penalty = resolve_profile_amp_prior(
+                loss_cfg=loss_cfg,
+                fallback_ridge=model.ls_ridge,
+                noise_var_norm=noise_var,
+                amp_scale=amp_scale,
+            )
+            patches = target.shape[1]
+            k_count = outputs["mu_f"].shape[-1]
+            y_complex = torch.complex(target[..., 0], target[..., 1])
+            y_flat = y_complex.reshape(patches, -1)
+            t_flat = t_local.reshape(patches, -1)
+            f_flat = outputs["mu_f"].expand(patches, k_count)
+            ridge_flat = (
+                ridge_lambda.reshape(patches)
+                if torch.is_tensor(ridge_lambda)
+                else ridge_lambda
+            )
+            _amp_real, _amp_imag, c_local, _cond = model.solve_amplitudes_ls(
+                y_complex=y_flat,
+                f=f_flat,
+                t=t_flat,
+                ridge_lambda=ridge_flat,
+                return_condition=True,
+            )
+            c_pred_m = c_local * amp_scale.reshape(patches, 1)
+            true_amp_local = _align_true_complex_coeff_to_local_time(
+                true_complex=true_amp.view(1, -1).expand(patches, -1),
+                true_freq_hz=true_freq.view(1, -1).expand(patches, -1),
+                t0=split["patch_t0_abs"],
+            )
+            amp_true = torch.abs(true_amp_local)
+            amp_mape_h = (
+                torch.abs(torch.abs(c_pred_m) - amp_true) / (amp_true + 1e-12)
+            ).mean(dim=0)
+            metrics[f"{prefix}_amp_mape_mean"] = float(amp_mape_h.mean().item())
+            for k, value in enumerate(amp_mape_h.detach().cpu().tolist(), start=1):
+                metrics[f"{prefix}_amp_mape_h{k}"] = float(value)
+            amp_tol = float(
+                loss_cfg.get("success", {}).get("amp_relative_tol", 0.05)
+            )
+            split_amp_ok[prefix] = amp_mape_h <= amp_tol
 
         lower = model.encoder.freq_lower.to(device=device, dtype=outputs["mu_f"].dtype)
         upper = model.encoder.freq_upper.to(device=device, dtype=outputs["mu_f"].dtype)
@@ -163,6 +206,9 @@ def evaluate_single_instance_splits(
         std_f = outputs["std_f"].squeeze(0)
         freq_err = mu_f - true_freq
         freq_norm_err = freq_err / (freq_half + 1e-12)
+        freq_rmse_h = torch.abs(freq_err)
+        freq_tol = float(loss_cfg.get("success", {}).get("freq_relative_tol", 0.02))
+        freq_ok = torch.abs(freq_err) / (torch.abs(true_freq) + 1e-12) <= freq_tol
         metrics.update(
             {
                 "freq_rmse_hz_mean": float(torch.sqrt(freq_err.pow(2).mean()).item()),
@@ -180,6 +226,16 @@ def evaluate_single_instance_splits(
                 "recon_nll_full": float(train_diag["recon_nll_full"].item()),
             }
         )
+        for k, value in enumerate(freq_rmse_h.detach().cpu().tolist(), start=1):
+            metrics[f"freq_rmse_h{k}_hz"] = float(value)
+        val_joint_ok = bool(
+            torch.all(freq_ok).item()
+            and torch.all(split_amp_ok.get("val", torch.zeros_like(freq_ok))).item()
+        )
+        metrics["val_joint_amp_freq_success_rate"] = 1.0 if val_joint_ok else 0.0
+        metrics["joint_amp_freq_success_rate_mean"] = metrics[
+            "val_joint_amp_freq_success_rate"
+        ]
         for k, value in enumerate(mu_f.detach().cpu().tolist(), start=1):
             metrics[f"global_freq_mu_h{k}_hz"] = float(value)
         for k, value in enumerate(std_f.detach().cpu().tolist(), start=1):

@@ -116,10 +116,30 @@ def _save_training_curves(history, output_dir):
     figures = {
         "train_loss.png": [
             ("train/loss", "loss"),
-            ("train/recon", "recon"),
+            ("eval/val_loss", "validation_loss"),
+            ("train/recon", "train_recon"),
+            ("eval/val_recon_btt_mse", "validation_recon_btt_mse"),
+        ],
+        "freq_rmse_components.png": [
+            ("eval/freq_rmse_h1_hz", "freq_h1_rmse_hz"),
+            ("eval/freq_rmse_h2_hz", "freq_h2_rmse_hz"),
+            ("eval/freq_rmse_h3_hz", "freq_h3_rmse_hz"),
+            ("eval/freq_rmse_h4_hz", "freq_h4_rmse_hz"),
+        ],
+        "amp_mape_components.png": [
+            ("eval/val_amp_mape_h1", "amp_h1_mape"),
+            ("eval/val_amp_mape_h2", "amp_h2_mape"),
+            ("eval/val_amp_mape_h3", "amp_h3_mape"),
+            ("eval/val_amp_mape_h4", "amp_h4_mape"),
+        ],
+        "joint_success.png": [
+            ("eval/joint_amp_freq_success_rate_mean", "joint_all_components"),
+            ("eval/val_joint_amp_freq_success_rate", "val_joint_all_components"),
         ],
         "eval_metrics.png": [
             ("eval/loss", "loss"),
+            ("eval/val_loss", "validation_loss"),
+            ("eval/val_recon_btt_mse", "validation_recon_btt_mse"),
             ("eval/recon_mse_mean", "recon_mean"),
             ("eval/recon_mse_sampled", "recon_sampled"),
             ("eval/freq_rmse_hz_mean", "freq_rmse"),
@@ -375,6 +395,10 @@ def _run_single_instance(
     ckpt_name = ckpt_cfg.get("name", "latest.pt")
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(run_dir, exist_ok=True)
+    log_cfg = CONFIG.get("logging", {})
+    save_curves = bool(log_cfg.get("save_curves", True))
+    curve_dir = log_cfg.get("curve_dir", "artifacts/curves")
+    curve_every = max(int(log_cfg.get("curve_every", 1)), 1)
 
     x_train = train_split["x"].unsqueeze(0)
     t_train = train_split["t_local"].unsqueeze(0)
@@ -429,6 +453,17 @@ def _run_single_instance(
             f"posterior_std={loss_diag['posterior_std_hz_mean'].item():.4f} "
             f"lr={step_lr:.3e}"
         )
+        train_values = {
+            "loss": float(loss.item()),
+            "recon": float(recon.item()),
+            "recon_btt_mse": float(loss_diag["recon_mse_sampled"].item()),
+            "map_profile_core": float(loss_diag["map_profile_core"].item()),
+            "data_nll_core": float(loss_diag["data_nll_core"].item()),
+            "freq_kl": float(loss_diag["freq_kl"].item()),
+            "lr": float(step_lr),
+        }
+        for key, value in train_values.items():
+            _append_history(history, f"train/{key}", epoch + 1, value)
 
         need_eval = (
             epoch == 0
@@ -455,6 +490,9 @@ def _run_single_instance(
             metrics["total_steps"] = total_steps
             metrics["seed"] = seed
             final_metrics = metrics
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    _append_history(history, f"eval/{key}", epoch + 1, value)
             if monitor_key not in metrics:
                 raise KeyError(
                     f"early_stopping.monitor={monitor_key!r} is not in metrics. "
@@ -481,6 +519,9 @@ def _run_single_instance(
                 f"std={metrics['posterior_std_hz_mean']:.4f} "
                 f"fusion_eff={metrics.get('fusion_effective_num_patches_mean', 0.0):.2f}"
             )
+            if save_curves and ((epoch + 1) % curve_every == 0):
+                if _save_training_curves(history, curve_dir):
+                    print(f"Updated curve images in: {curve_dir}")
             metrics_path = os.path.join(run_dir, "metrics.json")
             with open(metrics_path, "w", encoding="utf-8") as f:
                 json.dump(
