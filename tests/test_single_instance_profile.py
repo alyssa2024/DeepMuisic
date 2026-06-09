@@ -7,9 +7,10 @@ from VAE import PhysicalHarmonicVAE
 def _make_dataset(seed=7):
     return BTTSingleInstanceDataset(
         patch_num_cycles=2,
-        num_train_patches=3,
-        num_val_patches=1,
-        num_test_patches=1,
+        num_total_patches=10,
+        train_fraction=0.6,
+        val_fraction=0.2,
+        test_fraction=0.2,
         num_probes=4,
         base_freq=150.0,
         fluctuation_delta=0.001,
@@ -36,9 +37,9 @@ def test_single_instance_dataset_fixed_frequency_and_splits():
     item_b = ds_b[0]
     assert torch.equal(item_a["true_freq_hz"], item_b["true_freq_hz"])
     assert torch.equal(item_a["train"]["x"], item_b["train"]["x"])
-    assert item_a["train"]["x"].shape[0] == 3
-    assert item_a["val"]["x"].shape[0] == 1
-    assert item_a["test"]["x"].shape[0] == 1
+    assert item_a["train"]["x"].shape[0] == 6
+    assert item_a["val"]["x"].shape[0] == 2
+    assert item_a["test"]["x"].shape[0] == 2
     assert torch.equal(item_a["true_freq_hz"], item_a["val"].get("true_freq_hz", item_a["true_freq_hz"]))
 
 

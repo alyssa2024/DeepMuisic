@@ -1,5 +1,9 @@
 import numpy as np
-import matplotlib.pyplot as plt
+
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 
 # In this simplified simulator, actual sampling time equals ideal sampling time.
 
@@ -107,19 +111,44 @@ def generate_complex_harmonic_displacement(
     return x_t_noisy, x_t, noise_power
 
 
-def compute_frequency_support(freq_center_hz, relative_half_band):
+def compute_frequency_support(
+    freq_center_hz,
+    relative_half_band=None,
+    absolute_half_band_hz=None,
+):
     centers = np.asarray(freq_center_hz, dtype=np.float64)
-    rel = np.asarray(relative_half_band, dtype=np.float64)
 
-    if rel.ndim == 0:
-        rel = np.full_like(centers, float(rel))
+    if absolute_half_band_hz is not None:
+        if relative_half_band is not None:
+            raise ValueError(
+                "Specify only one of relative_half_band or absolute_half_band_hz"
+            )
+        half_band = np.asarray(absolute_half_band_hz, dtype=np.float64)
+        if half_band.ndim == 0:
+            half_band = np.full_like(centers, float(half_band))
+        if half_band.shape != centers.shape:
+            raise ValueError(
+                f"absolute_half_band_hz shape {half_band.shape} must be scalar "
+                f"or match centers {centers.shape}"
+            )
+    else:
+        if relative_half_band is None:
+            raise ValueError(
+                "One of relative_half_band or absolute_half_band_hz must be provided"
+            )
+        rel = np.asarray(relative_half_band, dtype=np.float64)
+        if rel.ndim == 0:
+            rel = np.full_like(centers, float(rel))
+        if rel.shape != centers.shape:
+            raise ValueError(
+                f"relative_half_band shape {rel.shape} must be scalar or match "
+                f"centers {centers.shape}"
+            )
+        half_band = rel * centers
 
-    if rel.shape != centers.shape:
-        raise ValueError(
-            f"relative_half_band shape {rel.shape} must be scalar or match centers {centers.shape}"
-        )
+    if np.any(half_band <= 0):
+        raise ValueError("frequency half band must be positive")
 
-    half_band = rel * centers
     lower = centers - half_band
     upper = centers + half_band
 

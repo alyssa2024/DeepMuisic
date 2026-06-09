@@ -10,12 +10,12 @@ CONFIG = {
         "dataset_type": "single_fixed_long_sequence",
         "input_dim": 6,
         "num_harmonics": 4,
-        "num_probes": 4,
+        "num_probes": 6,
         "base_freq": 150.0,
         "fluctuation_delta": 0.001,
-        "probes": [0, 28, 111.08, 166.15],
+        "probes": [0, 60, 120, 180, 240, 300],
         "patch_num_cycles": 4,
-        "num_total_patches": 5000,
+        "num_total_patches": 1000,
         "train_fraction": 0.6,
         "val_fraction": 0.2,
         "test_fraction": 0.2,
@@ -41,6 +41,7 @@ CONFIG = {
     "frequency": {
         "center_hz": [167.0, 341.0, 635.0, 872.0],
         "relative_half_band": 0.05,
+        "absolute_half_band_hz": None,
         "data_prior": {
             "type": "uniform",
         },
@@ -52,6 +53,10 @@ CONFIG = {
             "scale_parameterization": "sigmoid_bound",
             "min_log_rho2": -8.0,
             "max_log_rho2": -2.0,
+        },
+        "posterior_init": {
+            "mode": "center",
+            "data_driven_grid_points": 401,
         },
         "loss_prior": {
             "type": "uniform",

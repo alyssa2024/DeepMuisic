@@ -290,11 +290,111 @@ def freq_cfg_fallback(freq_lower, freq_upper):
     return (np.asarray(freq_lower) + np.asarray(freq_upper)) * 0.5
 
 
+def _frequency_support_from_config(freq_cfg):
+    absolute_half_band = freq_cfg.get("absolute_half_band_hz")
+    if absolute_half_band is not None:
+        return compute_frequency_support(
+            freq_center_hz=freq_cfg["center_hz"],
+            absolute_half_band_hz=absolute_half_band,
+        )
+    return compute_frequency_support(
+        freq_center_hz=freq_cfg["center_hz"],
+        relative_half_band=freq_cfg["relative_half_band"],
+    )
+
+
 def _move_split_to_device(split, device):
     return {
         key: value.to(device) if torch.is_tensor(value) else value
         for key, value in split.items()
     }
+
+
+def _atanh_clamped(x):
+    x = x.clamp(-0.999, 0.999)
+    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+
+def _set_direct_global_frequency_mu(encoder, f_init_hz):
+    if not isinstance(encoder, DirectFrequencyVariationalPosterior):
+        raise TypeError("frequency initialization is only supported for direct_global")
+    f_init = torch.as_tensor(
+        f_init_hz,
+        dtype=encoder.freq_mid.dtype,
+        device=encoder.freq_mid.device,
+    ).view(-1)
+    if f_init.shape != encoder.freq_mid.shape:
+        raise ValueError(
+            f"frequency init shape {tuple(f_init.shape)} must match "
+            f"posterior shape {tuple(encoder.freq_mid.shape)}"
+        )
+    mu_unit = (f_init - encoder.freq_mid) / encoder.freq_half
+    with torch.no_grad():
+        encoder.raw_mu_f.copy_(_atanh_clamped(mu_unit))
+    return encoder.freq_mid + encoder.freq_half * torch.tanh(encoder.raw_mu_f)
+
+
+def _data_driven_frequency_init(train_split, freq_lower, freq_upper, grid_points, device):
+    target = train_split["target"].to(device)
+    t_local = train_split["t_local"].to(device)
+    y = torch.complex(target[..., 0], target[..., 1])
+    lower = torch.as_tensor(freq_lower, dtype=torch.float32, device=device).view(-1)
+    upper = torch.as_tensor(freq_upper, dtype=torch.float32, device=device).view(-1)
+    grid_points = max(int(grid_points), 2)
+
+    estimates = []
+    for lo, hi in zip(lower, upper):
+        grid = torch.linspace(lo, hi, steps=grid_points, device=device)
+        best_score = None
+        best_freq = grid[0]
+        for chunk in torch.split(grid, 128):
+            phase = -2.0 * torch.pi * t_local[..., None] * chunk.view(1, 1, -1)
+            atoms = torch.polar(torch.ones_like(phase), phase)
+            matched = (y[..., None] * atoms).sum(dim=1)
+            score = matched.abs().pow(2).sum(dim=0) / max(t_local.shape[1], 1)
+            chunk_best_score, chunk_best_idx = score.max(dim=0)
+            if best_score is None or chunk_best_score > best_score:
+                best_score = chunk_best_score
+                best_freq = chunk[chunk_best_idx]
+        estimates.append(best_freq)
+    return torch.stack(estimates)
+
+
+def _apply_direct_global_frequency_init(
+    model,
+    sample,
+    train_split,
+    freq_cfg,
+    freq_lower,
+    freq_upper,
+):
+    if not isinstance(model.encoder, DirectFrequencyVariationalPosterior):
+        return None
+
+    init_cfg = freq_cfg.get("posterior_init", {})
+    mode = str(init_cfg.get("mode", "center")).lower()
+    if mode == "center":
+        f_init = model.encoder.freq_mid
+    elif mode == "oracle":
+        f_init = sample["true_freq_hz"].to(model.encoder.freq_mid.device)
+    elif mode == "data_driven":
+        f_init = _data_driven_frequency_init(
+            train_split=train_split,
+            freq_lower=freq_lower,
+            freq_upper=freq_upper,
+            grid_points=init_cfg.get("data_driven_grid_points", 401),
+            device=model.encoder.freq_mid.device,
+        )
+    else:
+        raise ValueError(
+            "frequency.posterior_init.mode must be one of "
+            "'center', 'oracle', or 'data_driven'"
+        )
+
+    initialized = _set_direct_global_frequency_mu(model.encoder, f_init)
+    init_values = initialized.detach().cpu().numpy().tolist()
+    print(f"Direct-global frequency init mode={mode}: {init_values}")
+    return initialized
 
 
 def _build_model(data_cfg, freq_cfg, model_cfg, freq_lower, freq_upper, device):
@@ -374,6 +474,14 @@ def _run_single_instance(
     )
 
     model = _build_model(data_cfg, freq_cfg, model_cfg, freq_lower, freq_upper, device)
+    _apply_direct_global_frequency_init(
+        model=model,
+        sample=sample,
+        train_split=train_split,
+        freq_cfg=freq_cfg,
+        freq_lower=freq_lower,
+        freq_upper=freq_upper,
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=float(train_cfg["lr"]))
     (
         lr_schedule_type,
@@ -567,9 +675,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    freq_lower, freq_upper, freq_center, freq_half_band = compute_frequency_support(
-        freq_center_hz=freq_cfg["center_hz"],
-        relative_half_band=freq_cfg["relative_half_band"],
+    freq_lower, freq_upper, freq_center, freq_half_band = _frequency_support_from_config(
+        freq_cfg
     )
     print(f"Frequency centers: {freq_center}")
     print(f"Frequency half bands: {freq_half_band}")
