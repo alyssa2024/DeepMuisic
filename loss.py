@@ -503,9 +503,10 @@ def _coherent_group_profile_recon_loss(
             phi_b = phi[:, start:end, :, :]
             y_b = y_complex[:, start:end, :]
             w_b = weights[:, start:end]
+            w_complex = w_b.to(dtype=complex_dtype)
 
-            gram = torch.einsum("gp,gplk,gplm->gkm", w_b, phi_b.conj(), phi_b)
-            rhs = torch.einsum("gp,gplk,gpl->gk", w_b, phi_b.conj(), y_b)
+            gram = torch.einsum("gp,gplk,gplm->gkm", w_complex, phi_b.conj(), phi_b)
+            rhs = torch.einsum("gp,gplk,gpl->gk", w_complex, phi_b.conj(), y_b)
 
             tau2_block = None
             if tau2_norm is not None:
