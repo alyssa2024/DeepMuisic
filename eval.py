@@ -76,6 +76,47 @@ def _to_single_instance_batch(split, device):
     }
 
 
+def _single_instance_time_key(loss_cfg):
+    rec_cfg = loss_cfg.get("reconstruction", {})
+    if "time_key" in rec_cfg:
+        return rec_cfg["time_key"]
+    mode = str(rec_cfg.get("profile_mode", "patch")).lower()
+    return "t_local" if mode in ("patch", "patchwise", "local") else "t_abs"
+
+
+def _profile_mode(loss_cfg):
+    return str(loss_cfg.get("reconstruction", {}).get("profile_mode", "patch")).lower()
+
+
+def _profile_block_slices(patches_per_group, mode, block_num_patches=None):
+    if mode in ("patch", "patchwise", "local"):
+        width = 1
+    elif mode in ("coherent", "global"):
+        width = int(patches_per_group)
+    elif mode in ("block", "block_coherent", "block-coherent"):
+        width = int(block_num_patches)
+    else:
+        raise ValueError(f"Unsupported profile_mode={mode!r}")
+    width = max(1, min(width, int(patches_per_group)))
+    return [
+        (start, min(start + width, int(patches_per_group)))
+        for start in range(0, int(patches_per_group), width)
+    ]
+
+
+def _expand_block_coefficients(c_blocks, patches_per_group, mode, block_num_patches=None):
+    if c_blocks.ndim == 2 and mode in ("patch", "patchwise", "local"):
+        return c_blocks
+    if c_blocks.ndim != 2:
+        raise ValueError(f"c_blocks must be [M, K], got {c_blocks.shape}")
+    pieces = []
+    for block_index, (start, end) in enumerate(
+        _profile_block_slices(patches_per_group, mode, block_num_patches)
+    ):
+        pieces.append(c_blocks[block_index].unsqueeze(0).expand(end - start, -1))
+    return torch.cat(pieces, dim=0)
+
+
 def evaluate_single_instance_splits(
     model: torch.nn.Module,
     sample: Dict,
@@ -90,8 +131,11 @@ def evaluate_single_instance_splits(
         sample["true_amp_imag"].to(device),
     )
     total_train_patches = int(sample["total_train_patches"].item())
+    time_key = _single_instance_time_key(loss_cfg)
+    mode = _profile_mode(loss_cfg)
+    block_num_patches = loss_cfg.get("reconstruction", {}).get("block_num_patches")
     x_train = train["x"].unsqueeze(0)
-    t_train = train["t_local"].unsqueeze(0)
+    t_train = train[time_key].unsqueeze(0)
     probe_train = train["probe_ids"].unsqueeze(0)
     target_train = train["target"].unsqueeze(0)
     noise_train = train["noise_var_norm"].unsqueeze(0)
@@ -125,14 +169,14 @@ def evaluate_single_instance_splits(
                 device,
             )
             target = split["target"].unsqueeze(0)
-            t_local = split["t_local"].unsqueeze(0)
+            t_eval = split[time_key].unsqueeze(0)
             noise_var = split["noise_var_norm"].unsqueeze(0)
             amp_scale = split["amp_scale"].unsqueeze(0)
             split_loss, _split_recon, _split_kl, split_diag = compute_harmonic_loss(
                 x_target=target,
                 model_outputs=outputs,
                 model=model,
-                t=t_local,
+                t=t_eval,
                 loss_cfg=loss_cfg,
                 noise_var_norm=noise_var,
                 amp_scale=amp_scale,
@@ -166,31 +210,50 @@ def evaluate_single_instance_splits(
             patches = target.shape[1]
             k_count = outputs["mu_f"].shape[-1]
             y_complex = torch.complex(target[..., 0], target[..., 1])
-            y_flat = y_complex.reshape(patches, -1)
-            t_flat = t_local.reshape(patches, -1)
-            f_flat = outputs["mu_f"].expand(patches, k_count)
-            ridge_flat = (
-                ridge_lambda.reshape(patches)
-                if torch.is_tensor(ridge_lambda)
-                else ridge_lambda
+            _profile_obj, profile_diag = compute_group_profile_recon_loss(
+                y_complex=y_complex,
+                t=t_eval,
+                mu_f=outputs["mu_f"],
+                std_f=outputs["std_f"],
+                model=model,
+                sequence_posterior_samples=1,
+                ridge_lambda=ridge_lambda,
+                noise_var_norm=noise_var,
+                include_log_const=False,
+                profile_mode=mode,
+                block_num_patches=block_num_patches,
+                f_samples=outputs["mu_f"].unsqueeze(0),
             )
-            _amp_real, _amp_imag, c_local, _cond = model.solve_amplitudes_ls(
-                y_complex=y_flat,
-                f=f_flat,
-                t=t_flat,
-                ridge_lambda=ridge_flat,
-                return_condition=True,
+            c_profile = profile_diag["c_hat_samples"][0, 0]
+            c_profile = _expand_block_coefficients(
+                c_profile,
+                patches_per_group=patches,
+                mode=mode,
+                block_num_patches=block_num_patches,
             )
-            c_pred_m = c_local * amp_scale.reshape(patches, 1)
-            true_amp_local = _align_true_complex_coeff_to_local_time(
-                true_complex=true_amp.view(1, -1).expand(patches, -1),
-                true_freq_hz=true_freq.view(1, -1).expand(patches, -1),
-                t0=split["patch_t0_abs"],
-            )
-            amp_true = torch.abs(true_amp_local)
+            c_pred_m = c_profile * amp_scale.reshape(patches, 1)
+            if time_key == "t_local" and mode in ("patch", "patchwise", "local"):
+                true_amp_ref = _align_true_complex_coeff_to_local_time(
+                    true_complex=true_amp.view(1, -1).expand(patches, -1),
+                    true_freq_hz=true_freq.view(1, -1).expand(patches, -1),
+                    t0=split["patch_t0_abs"],
+                )
+            else:
+                true_amp_ref = true_amp.view(1, -1).expand(patches, -1)
+            amp_true = torch.abs(true_amp_ref)
             amp_mape_h = (
                 torch.abs(torch.abs(c_pred_m) - amp_true) / (amp_true + 1e-12)
             ).mean(dim=0)
+            complex_rel_h = (
+                torch.abs(c_pred_m - true_amp_ref) / (amp_true + 1e-12)
+            ).mean(dim=0)
+            phase_err_h = _circular_abs_phase_error(c_pred_m, true_amp_ref).mean(dim=0)
+            metrics[f"{prefix}_complex_coeff_rel_err_mean"] = float(
+                complex_rel_h.mean().item()
+            )
+            metrics[f"{prefix}_phase_circ_mae_rad"] = float(
+                phase_err_h.mean().item()
+            )
             metrics[f"{prefix}_amp_mape_mean"] = float(amp_mape_h.mean().item())
             for k, value in enumerate(amp_mape_h.detach().cpu().tolist(), start=1):
                 metrics[f"{prefix}_amp_mape_h{k}"] = float(value)

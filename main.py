@@ -60,6 +60,14 @@ def _append_history(history, key, step, value):
     history.setdefault(key, []).append((int(step), float(value)))
 
 
+def _single_instance_time_key(loss_cfg):
+    rec_cfg = loss_cfg.get("reconstruction", {})
+    if "time_key" in rec_cfg:
+        return rec_cfg["time_key"]
+    mode = str(rec_cfg.get("profile_mode", "patch")).lower()
+    return "t_local" if mode in ("patch", "patchwise", "local") else "t_abs"
+
+
 def _resolve_lr_schedule(train_cfg, steps_per_epoch):
     schedule_cfg = train_cfg.get("lr_schedule", {})
     schedule_type = schedule_cfg.get("type", "warmup_cosine")
@@ -510,8 +518,12 @@ def _run_single_instance(
     curve_dir = log_cfg.get("curve_dir", "artifacts/curves")
     curve_every = max(int(log_cfg.get("curve_every", 1)), 1)
 
+    time_key = _single_instance_time_key(loss_cfg)
+    if time_key not in train_split:
+        raise KeyError(f"loss.reconstruction.time_key={time_key!r} is not in train split")
+
     x_train = train_split["x"].unsqueeze(0)
-    t_train = train_split["t_local"].unsqueeze(0)
+    t_train = train_split[time_key].unsqueeze(0)
     probe_train = train_split["probe_ids"].unsqueeze(0)
     target_train = train_split["target"].unsqueeze(0)
     noise_train = train_split["noise_var_norm"].unsqueeze(0)

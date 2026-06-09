@@ -223,7 +223,6 @@ class PhysicalHarmonicVAE(nn.Module):
                         -1,
                     ),
                 }
-                outputs.update(self.compute_fusion_diagnostics(std_local))
                 return outputs
             group_shape = (group_size, patches_per_group)
             x_encoder = x.reshape(group_size * patches_per_group, seq_len, input_dim)

@@ -405,6 +405,239 @@ def compute_sequence_posterior_recon_loss(
     return recon_loss, diagnostics
 
 
+def _profile_block_slices(patches_per_group, profile_mode, block_num_patches=None):
+    mode = str(profile_mode or "patch").lower()
+    if mode in ("patch", "patchwise", "local"):
+        width = 1
+    elif mode in ("coherent", "global"):
+        width = int(patches_per_group)
+    elif mode in ("block", "block_coherent", "block-coherent"):
+        if block_num_patches is None:
+            raise ValueError("block profile mode requires block_num_patches")
+        width = int(block_num_patches)
+    else:
+        raise ValueError(
+            "profile_mode must be 'patch', 'coherent', or 'block', "
+            f"got {profile_mode!r}"
+        )
+    if width <= 0:
+        raise ValueError("block_num_patches must be positive")
+    width = min(width, int(patches_per_group))
+    return [
+        (start, min(start + width, int(patches_per_group)))
+        for start in range(0, int(patches_per_group), width)
+    ]
+
+
+def _block_mean_param(param, start, end, group_size, device, dtype, name):
+    if param is None:
+        return None
+    if torch.is_tensor(param):
+        value = param.to(device=device, dtype=dtype)
+        if value.ndim != 2 or value.shape[0] != group_size:
+            raise ValueError(f"{name} tensor must have shape [G, P], got {value.shape}")
+        if end > value.shape[1]:
+            raise ValueError(
+                f"{name} has only {value.shape[1]} patches, requested block ending at {end}"
+            )
+        return value[:, start:end].mean(dim=1)
+    return torch.full((group_size,), float(param), device=device, dtype=dtype)
+
+
+def _coherent_group_profile_recon_loss(
+    y_complex,
+    t,
+    f_samples,
+    ridge_lambda,
+    tau2_norm,
+    include_amp_prior_penalty,
+    noise_var_norm,
+    include_log_const,
+    profile_mode,
+    block_num_patches,
+    eps,
+):
+    group_size, patches_per_group, seq_len = y_complex.shape
+    device = y_complex.device
+    real_dtype = y_complex.real.dtype
+    complex_dtype = y_complex.dtype
+    k_count = f_samples.shape[-1]
+    block_slices = _profile_block_slices(
+        patches_per_group=patches_per_group,
+        profile_mode=profile_mode,
+        block_num_patches=block_num_patches,
+    )
+
+    if noise_var_norm is None:
+        noise_var = torch.ones(
+            group_size,
+            patches_per_group,
+            device=device,
+            dtype=real_dtype,
+        )
+    else:
+        noise_var = noise_var_norm.to(device=device, dtype=real_dtype)
+        if noise_var.shape != y_complex.shape[:2]:
+            raise ValueError(
+                f"noise_var_norm must have shape [G, P], got {noise_var_norm.shape}"
+            )
+    noise_var = noise_var.clamp_min(eps)
+    weights = 1.0 / noise_var
+
+    y_hat_samples = []
+    c_hat_samples = []
+    ls_cond_samples = []
+    amp_prior_per_sample_group = []
+    eye = torch.eye(k_count, dtype=complex_dtype, device=device).unsqueeze(0)
+
+    for s in range(f_samples.shape[0]):
+        f_s = f_samples[s]
+        phase = 2.0 * torch.pi * t.unsqueeze(-1) * f_s[:, None, None, :]
+        phi = torch.polar(torch.ones_like(phase), phase)
+        y_hat_s = torch.empty_like(y_complex)
+        c_blocks = []
+        cond_blocks = []
+        amp_prior_group = torch.zeros(group_size, device=device, dtype=real_dtype)
+
+        for start, end in block_slices:
+            phi_b = phi[:, start:end, :, :]
+            y_b = y_complex[:, start:end, :]
+            w_b = weights[:, start:end]
+
+            gram = torch.einsum("gp,gplk,gplm->gkm", w_b, phi_b.conj(), phi_b)
+            rhs = torch.einsum("gp,gplk,gpl->gk", w_b, phi_b.conj(), y_b)
+
+            tau2_block = None
+            if tau2_norm is not None:
+                tau2_block = _block_mean_param(
+                    tau2_norm,
+                    start,
+                    end,
+                    group_size,
+                    device,
+                    real_dtype,
+                    "tau2_norm",
+                ).clamp_min(eps)
+                prior_precision = 1.0 / tau2_block
+            elif torch.is_tensor(ridge_lambda):
+                ridge_block = _block_mean_param(
+                    ridge_lambda,
+                    start,
+                    end,
+                    group_size,
+                    device,
+                    real_dtype,
+                    "ridge_lambda",
+                )
+                mean_noise = noise_var[:, start:end].mean(dim=1).clamp_min(eps)
+                prior_precision = ridge_block / mean_noise
+            else:
+                prior_precision = torch.full(
+                    (group_size,),
+                    float(ridge_lambda),
+                    device=device,
+                    dtype=real_dtype,
+                )
+
+            gram_reg = gram + prior_precision.to(complex_dtype).view(-1, 1, 1) * eye
+            c_block = torch.linalg.solve(gram_reg, rhs.unsqueeze(-1)).squeeze(-1)
+            y_hat_s[:, start:end, :] = torch.einsum("gplk,gk->gpl", phi_b, c_block)
+
+            c_blocks.append(c_block)
+            cond_blocks.append(torch.linalg.cond(gram_reg))
+            if include_amp_prior_penalty:
+                if tau2_block is None:
+                    raise ValueError(
+                        "include_amp_prior_penalty=True requires tau2_norm"
+                    )
+                amp_prior_group = amp_prior_group + (
+                    torch.abs(c_block).pow(2) / tau2_block.view(-1, 1)
+                ).sum(dim=1)
+
+        y_hat_samples.append(y_hat_s)
+        c_hat_samples.append(torch.stack(c_blocks, dim=1))
+        ls_cond_samples.append(torch.stack(cond_blocks, dim=1))
+        amp_prior_per_sample_group.append(amp_prior_group)
+
+    y_hat_samples = torch.stack(y_hat_samples, dim=0)
+    c_hat_samples = torch.stack(c_hat_samples, dim=0)
+    ls_cond_samples = torch.stack(ls_cond_samples, dim=0)
+    amp_prior_per_sample_group = torch.stack(amp_prior_per_sample_group, dim=0)
+
+    sqerr = torch.abs(y_hat_samples - y_complex.unsqueeze(0)) ** 2
+    recon_mse = sqerr.mean()
+    data_core_per_sample_group = (
+        sqerr / noise_var.view(1, group_size, patches_per_group, 1)
+    ).sum(dim=(2, 3))
+    data_nll_core = data_core_per_sample_group.mean()
+    amp_prior_core = amp_prior_per_sample_group.mean()
+
+    if include_amp_prior_penalty and tau2_norm is not None:
+        amp_prior_log_terms = []
+        for start, end in block_slices:
+            tau2_block = _block_mean_param(
+                tau2_norm,
+                start,
+                end,
+                group_size,
+                device,
+                real_dtype,
+                "tau2_norm",
+            ).clamp_min(eps)
+            amp_prior_log_terms.append(k_count * torch.log(math.pi * tau2_block))
+        amp_prior_log_const = torch.stack(amp_prior_log_terms, dim=1).sum(dim=1).mean()
+    else:
+        amp_prior_log_const = torch.zeros((), device=device, dtype=real_dtype)
+
+    map_profile_core = data_nll_core + amp_prior_core
+    log_const_per_group = seq_len * torch.log(math.pi * noise_var).sum(dim=1)
+    data_log_const = log_const_per_group.mean()
+    full_map_profile_objective = (
+        map_profile_core + data_log_const + amp_prior_log_const
+    )
+    recon_loss = full_map_profile_objective if include_log_const else map_profile_core
+
+    amp_norm = torch.linalg.norm(c_hat_samples, dim=-1)
+    diagnostics = {
+        "f_samples": f_samples,
+        "y_hat_samples": y_hat_samples,
+        "c_hat_samples": c_hat_samples,
+        "recon_mse_sampled": recon_mse,
+        "recon_nll": data_nll_core,
+        "recon_nll_full": data_nll_core + data_log_const,
+        "data_nll_core": data_nll_core,
+        "amp_map_prior_core": amp_prior_core,
+        "map_profile_core": map_profile_core,
+        "data_log_const": data_log_const,
+        "amplitude_prior_log_const": amp_prior_log_const,
+        "full_map_profile_objective": full_map_profile_objective,
+        "noise_var_norm_mean": noise_var.mean(),
+        "noise_var_norm_min": noise_var.min(),
+        "noise_var_norm_max": noise_var.max(),
+        "freq_sample_std_mean": f_samples.std(dim=0, unbiased=False).mean(),
+        "ls_cond_mean": ls_cond_samples.mean(),
+        "ls_cond_p95": torch.quantile(ls_cond_samples.reshape(-1), 0.95),
+        "ls_amp_norm_mean": amp_norm.mean(),
+        "ls_amp_norm_p95": torch.quantile(amp_norm.reshape(-1), 0.95),
+        "profile_mode": profile_mode,
+        "profile_num_blocks": torch.as_tensor(
+            len(block_slices), device=device, dtype=real_dtype
+        ),
+        "profile_block_num_patches": torch.as_tensor(
+            max(end - start for start, end in block_slices),
+            device=device,
+            dtype=real_dtype,
+        ),
+    }
+    if torch.is_tensor(ridge_lambda):
+        ridge_diag = ridge_lambda.to(device=device, dtype=real_dtype)
+        diagnostics["map_lambda_mean"] = ridge_diag.mean()
+        diagnostics["map_lambda_min"] = ridge_diag.min()
+        diagnostics["map_lambda_max"] = ridge_diag.max()
+
+    return recon_loss, diagnostics
+
+
 def compute_group_profile_recon_loss(
     y_complex,
     t,
@@ -418,6 +651,8 @@ def compute_group_profile_recon_loss(
     f_samples=None,
     noise_var_norm=None,
     include_log_const=True,
+    profile_mode="patch",
+    block_num_patches=None,
     eps=1e-8,
 ):
     """
@@ -455,6 +690,22 @@ def compute_group_profile_recon_loss(
             raise ValueError(
                 f"f_samples shape {f_samples.shape} does not match mu_f {mu_f.shape}"
             )
+
+    mode = str(profile_mode or "patch").lower()
+    if mode not in ("patch", "patchwise", "local"):
+        return _coherent_group_profile_recon_loss(
+            y_complex=y_complex,
+            t=t,
+            f_samples=f_samples,
+            ridge_lambda=ridge_lambda,
+            tau2_norm=tau2_norm,
+            include_amp_prior_penalty=include_amp_prior_penalty,
+            noise_var_norm=noise_var_norm,
+            include_log_const=include_log_const,
+            profile_mode=mode,
+            block_num_patches=block_num_patches,
+            eps=eps,
+        )
 
     y_hat_samples = []
     c_hat_samples = []
@@ -624,6 +875,8 @@ def compute_harmonic_loss(
     rec_cfg = loss_cfg.get("reconstruction", {})
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
     include_log_const = bool(rec_cfg.get("include_log_const", False))
+    profile_mode = rec_cfg.get("profile_mode", "patch")
+    block_num_patches = rec_cfg.get("block_num_patches")
     y_complex = torch.complex(x_target[..., 0], x_target[..., 1])
     is_group_profile = x_target.ndim == 4
     ridge_lambda, tau2_norm, include_amp_prior_penalty = resolve_profile_amp_prior(
@@ -651,6 +904,8 @@ def compute_harmonic_loss(
             include_amp_prior_penalty=include_amp_prior_penalty,
             noise_var_norm=noise_var_norm,
             include_log_const=include_log_const,
+            profile_mode=profile_mode,
+            block_num_patches=block_num_patches,
         )
     else:
         recon_loss, recon_diag = compute_sequence_posterior_recon_loss(

@@ -63,7 +63,7 @@ CONFIG = {
         },
     },
     "model": {
-        "inference_parameterization": "encoder_fusion",
+        "inference_parameterization": "direct_global",
         "hidden_dim": 128,
         "nhead": 8,
         "num_layers": 2,
@@ -82,6 +82,8 @@ CONFIG = {
             "sequence_posterior_samples": 4,
             "sample_at_train": True,
             "eval_at_mean": True,
+            "profile_mode": "coherent",
+            "time_key": "t_abs",
         },
         "kl": {
             "enabled": True,
