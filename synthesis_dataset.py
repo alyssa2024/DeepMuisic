@@ -107,19 +107,44 @@ def generate_complex_harmonic_displacement(
     return x_t_noisy, x_t, noise_power
 
 
-def compute_frequency_support(freq_center_hz, relative_half_band):
+def compute_frequency_support(
+    freq_center_hz,
+    relative_half_band=None,
+    model_search=None,
+):
     centers = np.asarray(freq_center_hz, dtype=np.float64)
-    rel = np.asarray(relative_half_band, dtype=np.float64)
+    model_search = model_search or {}
+    search_type = model_search.get("type", "relative_band")
 
-    if rel.ndim == 0:
-        rel = np.full_like(centers, float(rel))
+    if search_type == "absolute_band":
+        if "half_band_hz" not in model_search:
+            raise ValueError("frequency.model_search.half_band_hz is required for absolute_band")
+        half_band = np.asarray(model_search["half_band_hz"], dtype=np.float64)
+        if half_band.ndim == 0:
+            half_band = np.full_like(centers, float(half_band))
+        if half_band.shape != centers.shape:
+            raise ValueError(
+                f"half_band_hz shape {half_band.shape} must be scalar or match centers {centers.shape}"
+            )
+    elif search_type == "relative_band":
+        if relative_half_band is None:
+            raise ValueError("relative_half_band is required for relative_band")
+        rel = np.asarray(relative_half_band, dtype=np.float64)
 
-    if rel.shape != centers.shape:
-        raise ValueError(
-            f"relative_half_band shape {rel.shape} must be scalar or match centers {centers.shape}"
-        )
+        if rel.ndim == 0:
+            rel = np.full_like(centers, float(rel))
 
-    half_band = rel * centers
+        if rel.shape != centers.shape:
+            raise ValueError(
+                f"relative_half_band shape {rel.shape} must be scalar or match centers {centers.shape}"
+            )
+
+        half_band = rel * centers
+    else:
+        raise ValueError(f"Unsupported frequency.model_search.type={search_type!r}")
+
+    if np.any(half_band <= 0):
+        raise ValueError("frequency half bands must be positive")
     lower = centers - half_band
     upper = centers + half_band
 

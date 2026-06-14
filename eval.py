@@ -149,22 +149,29 @@ def evaluate_model(
             probe_ids = batch["probe_ids_windows"].to(device)
             target_batch = batch["target_windows"].to(device)
             window_start_cycle = batch["window_start_cycle"].to(device)
-            noise_var_norm = batch["noise_var_norm"].to(device)
+            noise_var_norm = batch.get("parent_noise_var_norm", batch["noise_var_norm"]).to(device)
             dataset_state = extract_dataset_state(batch, device)
             true_freq = batch["true_freq_hz"].to(device)
             true_amp = torch.complex(
                 batch["true_amp_real"].to(device),
                 batch["true_amp_imag"].to(device),
             )
-            amp_scale = batch["amp_scale"].to(device)
+            amp_scale = batch.get("parent_amp_scale", batch["amp_scale"]).to(device)
 
             batch_size, num_windows, seq_len, _ = target_batch.shape
-            t0 = t_batch[:, 0, :1]
-            t_global = (t_batch - t0.view(batch_size, 1, 1)).reshape(
-                batch_size,
-                num_windows * seq_len,
-            )
-            target_global = target_batch.reshape(batch_size, num_windows * seq_len, 2)
+            if "parent_target" in batch and "parent_t_abs" in batch:
+                parent_target = batch["parent_target"].to(device)
+                parent_t_abs = batch["parent_t_abs"].to(device)
+                t0 = parent_t_abs[:, :1]
+                t_global = parent_t_abs - t0
+                target_global = parent_target
+            else:
+                t0 = t_batch[:, 0, :1]
+                t_global = (t_batch - t0.view(batch_size, 1, 1)).reshape(
+                    batch_size,
+                    num_windows * seq_len,
+                )
+                target_global = target_batch.reshape(batch_size, num_windows * seq_len, 2)
 
             outputs = model.forward_global(
                 x_batch,
@@ -260,7 +267,7 @@ def evaluate_model(
                 sequence_posterior_samples=s_seq,
                 ridge_lambda=model.ls_ridge,
                 noise_var_norm=noise_var_norm,
-                include_log_const=False,
+                include_log_const=bool(rec_cfg.get("include_log_const", False)),
                 amp_scale=amp_scale,
                 t0=t0.squeeze(1),
                 signal_cfg=signal_cfg,

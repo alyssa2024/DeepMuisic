@@ -1,4 +1,4 @@
-﻿"""
+"""
 Centralized project configuration.
 
 Edit values here, then run `main.py`.
@@ -6,10 +6,12 @@ Edit values here, then run `main.py`.
 
 CONFIG = {
     "seed": 42,
+
     "frequency_model": {
         "type": "static_global",
-        "interpretation": "first_order_approximation",
+        "interpretation": "multi_parameter_global_frequency",
     },
+
     "data": {
         "input_dim": 7,
         "include_local_time_norm": True,
@@ -19,64 +21,64 @@ CONFIG = {
         "fluctuation_delta": 0.001,
         "probes": [0, 28, 111.08, 166.15],
         "num_cycles": 4,
+
         "train_dataset": {
-            "num_param_sets": 1,
-            "sequences_per_param": 1,
+            "num_param_sets": 1000,
+            "sequences_per_param": 4,
             "use_long_sequence": True,
-            "long_sequence_num_cycles": 10000,
+            "long_sequence_num_cycles": 64,
             "window_hop_cycles": 4,
-            "chronological_split": True,
-            "train_ratio": 0.6,
-            "val_ratio": 0.2,
+            "chronological_split": False,
+            "train_ratio": 0.8,
+            "val_ratio": 0.1,
             "sequence_num_cycles": 4,
             "return_global_parent": True,
         },
+
         "test_dataset": {
-            "num_param_sets": 1,
-            "sequences_per_param": 1,
+            "num_param_sets": 200,
+            "sequences_per_param": 2,
             "use_long_sequence": True,
-            "sequence_num_cycles": 4,
-            "chronological_split": True,
-            "train_ratio": 0.6,
-            "val_ratio": 0.2,
-            "long_sequence_num_cycles": 10000,
+            "long_sequence_num_cycles": 64,
             "window_hop_cycles": 4,
+            "chronological_split": False,
+            "train_ratio": 0.8,
+            "val_ratio": 0.1,
+            "sequence_num_cycles": 4,
             "return_global_parent": True,
         },
-        "num_train_sequences": 10000,
-        "num_val_sequences": 2000,
-        "num_test_sequences": 2000,
-        "batch_size": 1,
+
+        "batch_size": 8,
         "normalization": "per_sequence_std",
     },
+
     "signal": {
         "amp_real_center_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
         "amp_imag_center_m": [0.0, 0.0008415, 0.0007274, 0.0001270],
-        "rho_amp_real_k": [0.0, 0.0, 0.0, 0.0],
-        "rho_amp_imag_k": [0.0, 0.0, 0.0, 0.0],
         "amp_data_prior": {
-            "type": "fixed_rho",
+            "type": "independent_uniform",
             "relative_half_band": 0.2,
             "min_half_band_m": 1e-5,
         },
         "snr_db": 20,
     },
+
     "frequency": {
         "center_hz": [167.0, 341.0, 635.0, 872.0],
         "relative_half_band": 0.05,
-        "rho_k": [0.0, 0.0, 0.0, 0.0],
         "data_prior": {
-            "type": "fixed_rho",
+            "type": "uniform",
         },
         "model_search": {
-            "type": "relative_band",
+            "type": "absolute_band",
+            "half_band_hz": [15.0, 15.0, 15.0, 15.0],
         },
         "posterior": {
             "type": "truncated_normal",
             "scale_parameterization": "sigmoid_bound",
             "min_log_rho2": -12.0,
-            "max_log_rho2": 0.0,
-            "init_log_rho2": -1.38629436112,
+            "max_log_rho2": -4.0,
+            "init_log_rho2": -4.0,
         },
         "loss_prior": {
             "type": "truncated_normal",
@@ -84,6 +86,7 @@ CONFIG = {
             "std_ratio_to_half_band": 0.5,
         },
     },
+
     "model": {
         "hidden_dim": 128,
         "nhead": 8,
@@ -93,65 +96,48 @@ CONFIG = {
         "use_standard_pe": False,
         "use_time_pe": False,
         "time_feature_index": -1,
-        "time_pe_num_bands": 64,
-        "time_pe_trainable_proj": True,
+
         "global_aggregation": {
             "enabled": True,
-            "type": "strict_poe",
-            "prior_std_ratio_to_half_band": 0.5,
-            "clamp_invalid_precision": True,
-            "use_window_position_embedding": False,
+            "type": "attention_pooling",
+            "use_window_position_embedding": True,
         },
+
         "ls_ridge": 1e-5,
     },
+
     "loss": {
         "beta_freq": 0.0,
+
         "reconstruction": {
             "type": "complex_gaussian_global_nll",
             "include_log_const": False,
-            "use_posterior_sampling": False,
-            "sequence_posterior_samples": 1,
+            "use_posterior_sampling": True,
+            "sequence_posterior_samples": 4,
             "sample_at_train": False,
             "eval_at_mean": True,
             "normalize_by_num_points": True,
         },
+
         "amplitude_prior": {
             "enabled": False,
-            "type": "centered_complex_gaussian_from_data_uniform",
-            "mode": "marginal_likelihood",
-            "local_time_align": True,
-            "include_prior_penalty": False,
-            "min_tau2_norm": 1e-10,
         },
+
         "kl": {
             "enabled": False,
-            "type": "trunc_normal_to_trunc_normal",
-            "warmup_steps": 10000,
-            "reuse_reconstruction_samples": False,
         },
+
         "elbo": {
             "mode": "static_global_ls",
             "state_aware": True,
             "strict_long_sequence_elbo": True,
             "global_time_origin": "parent",
         },
-        "success": {
-            "freq_relative_tol": 0.02,
-            "amp_relative_tol": 0.05,
-            "complex_coeff_relative_tol": 0.05,
-        },
     },
+
     "training": {
         "epochs": 100,
         "lr": 1e-4,
-        "objective_curriculum": {
-            "enabled": False,
-            "cycles": [10000],
-            "epochs_per_stage": [100],
-            "lr_per_stage": [1e-4],
-            "segment_mode": "prefix",
-            "apply_to_encoder": True,
-        },
         "lr_schedule": {
             "type": "warmup_cosine",
             "warmup_steps": 1000,
@@ -165,21 +151,24 @@ CONFIG = {
             "enabled": False,
             "monitor": "recon_mse_mean",
             "mode": "min",
-            "patience": 5,
+            "patience": 10,
             "min_delta": 1e-5,
         },
     },
+
     "eval": {
         "eval_every": 5,
         "dense_factor": 4,
         "target_recon_mse": 0.1,
     },
+
     "checkpoint": {
         "dir": "checkpoints",
         "name": "latest.pt",
         "save_every": 20,
         "resume_from": None,
     },
+
     "logging": {
         "enable_tensorboard": True,
         "tensorboard_dir": "artifacts/tensorboard",
@@ -187,6 +176,7 @@ CONFIG = {
         "curve_dir": "artifacts/curves",
         "curve_every": 1,
     },
+
     "experiment": {
         "snr_values": [-5, 0, 5, 10, 15, 20],
         "seeds": [0],

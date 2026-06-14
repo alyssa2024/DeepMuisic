@@ -138,7 +138,8 @@ def main():
 
     freq_lower, freq_upper, _, _ = compute_frequency_support(
         freq_center_hz=freq_cfg["center_hz"],
-        relative_half_band=freq_cfg["relative_half_band"],
+        relative_half_band=freq_cfg.get("relative_half_band"),
+        model_search=freq_cfg.get("model_search"),
     )
     posterior_cfg = freq_cfg.get("posterior", {})
     encoder = VariationalIndependentTimeSeriesTransformer(

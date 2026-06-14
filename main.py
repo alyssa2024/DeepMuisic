@@ -388,7 +388,8 @@ def main():
 
     freq_lower, freq_upper, freq_center, freq_half_band = compute_frequency_support(
         freq_center_hz=freq_cfg["center_hz"],
-        relative_half_band=freq_cfg["relative_half_band"],
+        relative_half_band=freq_cfg.get("relative_half_band"),
+        model_search=freq_cfg.get("model_search"),
     )
     frequency_rho = freq_cfg.get("rho_k", None)
     amp_real_rho = signal_cfg.get("rho_amp_real_k", None)
@@ -701,6 +702,7 @@ def main():
                 "objective_stage": 0.0,
                 "objective_num_windows": 0.0,
                 "objective_num_points": 0.0,
+                "objective_uses_parent_unique": 0.0,
                 "poe_invalid_precision_rate": 0.0,
                 "poe_precision_raw_min": 0.0,
                 "poe_precision_raw_mean": 0.0,
@@ -721,8 +723,18 @@ def main():
                 probe_ids = batch["probe_ids_windows"].to(device)
                 target_batch = batch["target_windows"].to(device)
                 window_start_cycle = batch["window_start_cycle"].to(device)
-                noise_var_norm = batch["noise_var_norm"].to(device)
-                amp_scale = batch["amp_scale"].to(device)
+                noise_var_norm = batch.get("parent_noise_var_norm", batch["noise_var_norm"]).to(device)
+                amp_scale = batch.get("parent_amp_scale", batch["amp_scale"]).to(device)
+                parent_target = (
+                    batch["parent_target"].to(device)
+                    if "parent_target" in batch
+                    else None
+                )
+                parent_t_abs = (
+                    batch["parent_t_abs"].to(device)
+                    if "parent_t_abs" in batch
+                    else None
+                )
                 dataset_state = extract_dataset_state(batch, device)
 
                 objective_num_windows = _num_windows_for_objective(
@@ -759,6 +771,8 @@ def main():
                     objective_cycles=objective_cycles,
                     short_num_cycles=short_num_cycles,
                     segment_mode=curriculum_cfg["segment_mode"],
+                    parent_target=parent_target,
+                    parent_t_abs=parent_t_abs,
                 )
 
                 if not torch.isfinite(loss):
@@ -831,6 +845,7 @@ def main():
                     "objective_cycles",
                     "objective_num_windows",
                     "objective_num_points",
+                    "objective_uses_parent_unique",
                     "poe_invalid_precision_rate",
                     "poe_precision_raw_min",
                     "poe_precision_raw_mean",

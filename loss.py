@@ -760,6 +760,8 @@ def compute_static_global_objective(
     objective_cycles=None,
     short_num_cycles=None,
     segment_mode="prefix",
+    parent_target=None,
+    parent_t_abs=None,
 ):
     """
     Strict static global-latent objective for parent long sequences.
@@ -794,15 +796,64 @@ def compute_static_global_objective(
     )
 
     batch_size, num_windows, seq_len, _ = target_windows.shape
-    t0 = t_windows_abs[:, 0, 0]
-    t_global = (t_windows_abs - t0.view(batch_size, 1, 1)).reshape(
-        batch_size,
-        num_windows * seq_len,
+    using_parent_unique = parent_target is not None and parent_t_abs is not None
+    strict_long_sequence_elbo = bool(
+        loss_cfg.get("elbo", {}).get("strict_long_sequence_elbo", False)
     )
-    y_complex = torch.complex(
-        target_windows[..., 0],
-        target_windows[..., 1],
-    ).reshape(batch_size, num_windows * seq_len)
+    if strict_long_sequence_elbo and not using_parent_unique and dataset_state is not None:
+        hop = dataset_state.get("window_hop_cycles")
+        short_cycles = dataset_state.get("short_num_cycles")
+        if hop is not None and short_cycles is not None:
+            overlap = hop.to(device=mu_f.device) < short_cycles.to(device=mu_f.device)
+            if torch.any(overlap):
+                raise ValueError(
+                    "strict_long_sequence_elbo with overlapping windows requires "
+                    "parent_target and parent_t_abs so the likelihood uses unique "
+                    "parent observations instead of duplicated flattened windows"
+                )
+
+    if using_parent_unique:
+        if parent_target.ndim != 3 or parent_target.shape[-1] != 2:
+            raise ValueError(
+                f"parent_target must have shape [B, N, 2], got {parent_target.shape}"
+            )
+        if parent_t_abs.shape != parent_target.shape[:2]:
+            raise ValueError(
+                "parent_t_abs shape must match parent_target[:2]: "
+                f"{parent_t_abs.shape} vs {parent_target.shape[:2]}"
+            )
+        if parent_target.shape[0] != batch_size:
+            raise ValueError(
+                "parent_target batch size must match target_windows: "
+                f"{parent_target.shape[0]} vs {batch_size}"
+            )
+
+        if objective_cycles is not None:
+            if short_num_cycles is None or int(short_num_cycles) <= 0:
+                raise ValueError(
+                    "short_num_cycles must be positive when slicing parent objective data"
+                )
+            points_per_cycle = max(1, int(seq_len) // int(short_num_cycles))
+            num_objective_points = min(
+                parent_target.shape[1],
+                max(1, int(objective_cycles) * points_per_cycle),
+            )
+            parent_target = parent_target[:, :num_objective_points]
+            parent_t_abs = parent_t_abs[:, :num_objective_points]
+
+        t0 = parent_t_abs[:, 0]
+        t_global = parent_t_abs - t0.view(batch_size, 1)
+        y_complex = torch.complex(parent_target[..., 0], parent_target[..., 1])
+    else:
+        t0 = t_windows_abs[:, 0, 0]
+        t_global = (t_windows_abs - t0.view(batch_size, 1, 1)).reshape(
+            batch_size,
+            num_windows * seq_len,
+        )
+        y_complex = torch.complex(
+            target_windows[..., 0],
+            target_windows[..., 1],
+        ).reshape(batch_size, num_windows * seq_len)
 
     rec_cfg = loss_cfg.get("reconstruction", {})
     s_seq = int(rec_cfg.get("sequence_posterior_samples", 1))
@@ -871,7 +922,12 @@ def compute_static_global_objective(
             dtype=mu_f.dtype,
         ).detach(),
         "objective_num_points": torch.as_tensor(
-            int(num_windows * seq_len),
+            int(y_complex.shape[1]),
+            device=mu_f.device,
+            dtype=mu_f.dtype,
+        ).detach(),
+        "objective_uses_parent_unique": torch.as_tensor(
+            int(using_parent_unique),
             device=mu_f.device,
             dtype=mu_f.dtype,
         ).detach(),

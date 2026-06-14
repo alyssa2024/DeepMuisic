@@ -696,12 +696,17 @@ class GroupedBTTSequenceDataset(Dataset):
             end = (int(start_cycle) + self.short_num_cycles) * self.num_probes
             point_indices.append(np.arange(start, end, dtype=np.int64))
         stacked_indices = np.concatenate(point_indices, axis=0)
+        unique_indices = np.unique(stacked_indices)
 
-        x_norm_all, amp_scale, noise_var_norm = _compute_normalization(
-            x_observed=sample["x_observed"][stacked_indices],
+        parent_x_norm, amp_scale, noise_var_norm = _compute_normalization(
+            x_observed=sample["x_observed"][unique_indices],
             noise_power=sample["noise_power"],
             normalization=self.normalization,
         )
+        parent_target = np.stack(
+            [np.real(parent_x_norm), np.imag(parent_x_norm)],
+            axis=-1,
+        ).astype(np.float32)
 
         x_windows = []
         t_windows = []
@@ -709,13 +714,7 @@ class GroupedBTTSequenceDataset(Dataset):
         probe_windows = []
         rev_windows = []
         for local_indices in point_indices:
-            x_observed_norm = x_norm_all[
-                len(x_windows) * self.short_num_cycles * self.num_probes : (
-                    len(x_windows) + 1
-                )
-                * self.short_num_cycles
-                * self.num_probes
-            ]
+            x_observed_norm = sample["x_observed"][local_indices] / (amp_scale + 1e-12)
             rev_ids = sample["rev_ids"][local_indices]
             local_rev_ids = rev_ids - int(rev_ids[0])
             features, t_samples, local_rev_ids, probe_ids = build_btt_point_features(
@@ -742,6 +741,13 @@ class GroupedBTTSequenceDataset(Dataset):
             "probe_ids_windows": torch.stack(probe_windows, dim=0),
             "rev_ids_windows": torch.stack(rev_windows, dim=0),
             "window_start_cycle": torch.as_tensor(start_cycles, dtype=torch.long),
+            "parent_target": torch.as_tensor(parent_target, dtype=torch.float32),
+            "parent_t_abs": torch.as_tensor(
+                sample["t_samples"][unique_indices],
+                dtype=torch.float32,
+            ),
+            "parent_amp_scale": torch.as_tensor(amp_scale, dtype=torch.float32),
+            "parent_noise_var_norm": torch.as_tensor(noise_var_norm, dtype=torch.float32),
             "true_freq_hz": torch.as_tensor(self.param_freq[param_id], dtype=torch.float32),
             "true_amp_real": torch.as_tensor(self.param_amp_real[param_id], dtype=torch.float32),
             "true_amp_imag": torch.as_tensor(self.param_amp_imag[param_id], dtype=torch.float32),

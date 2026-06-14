@@ -199,10 +199,10 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
         torch.nn.init.zeros_(self._fc_f_mu.bias)
         if init_log_rho2 is not None:
             init_log_rho2 = float(init_log_rho2)
-            if not (self.min_log_rho2 < init_log_rho2 < self.max_log_rho2):
+            if not (self.min_log_rho2 <= init_log_rho2 <= self.max_log_rho2):
                 raise ValueError(
                     f"init_log_rho2={init_log_rho2} must lie inside "
-                    f"({self.min_log_rho2}, {self.max_log_rho2})"
+                    f"[{self.min_log_rho2}, {self.max_log_rho2}]"
                 )
             s = (init_log_rho2 - self.min_log_rho2) / (
                 self.max_log_rho2 - self.min_log_rho2
