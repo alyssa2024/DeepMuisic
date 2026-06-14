@@ -398,108 +398,47 @@ def main():
     print(f"Frequency half bands: {freq_half_band}")
 
     train_dataset_cfg = data_cfg.get("train_dataset", None)
-    test_dataset_cfg = data_cfg.get("test_dataset", None)
     if train_dataset_cfg is None:
         raise ValueError("Stage 1 requires data.train_dataset with return_global_parent=True")
     if not bool(train_dataset_cfg.get("return_global_parent", True)):
         raise ValueError("Stage 1 requires data.train_dataset.return_global_parent=True")
 
-    if train_dataset_cfg.get("chronological_split", False):
-        train_set = _build_grouped_dataset(
-            dataset_cfg=train_dataset_cfg,
-            split="train",
-            seed=seed,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            frequency_rho=frequency_rho,
-            amp_real_rho=amp_real_rho,
-            amp_imag_rho=amp_imag_rho,
-        )
-        val_set = _build_grouped_dataset(
-            dataset_cfg=train_dataset_cfg,
-            split="val",
-            seed=seed,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            frequency_rho=frequency_rho,
-            amp_real_rho=amp_real_rho,
-            amp_imag_rho=amp_imag_rho,
-        )
-        test_set = _build_grouped_dataset(
-            dataset_cfg=train_dataset_cfg,
-            split="test",
-            seed=seed,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            frequency_rho=frequency_rho,
-            amp_real_rho=amp_real_rho,
-            amp_imag_rho=amp_imag_rho,
-        )
-    else:
-        train_set = _build_grouped_dataset(
-            dataset_cfg=train_dataset_cfg,
-            split="train",
-            seed=seed,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            frequency_rho=frequency_rho,
-            amp_real_rho=amp_real_rho,
-            amp_imag_rho=amp_imag_rho,
-        )
-        val_dataset_cfg = data_cfg.get(
-            "val_dataset",
-            {
-                **train_dataset_cfg,
-                "num_param_sets": data_cfg.get("num_val_sequences", 2000),
-                "sequences_per_param": 1,
-                "use_long_sequence": True,
-                "chronological_split": False,
-                "sequence_num_cycles": data_cfg["num_cycles"],
-                "long_sequence_num_cycles": train_dataset_cfg.get(
-                    "long_sequence_num_cycles",
-                    data_cfg["num_cycles"],
-                ),
-                "window_hop_cycles": train_dataset_cfg.get("window_hop_cycles", data_cfg["num_cycles"]),
-                "return_global_parent": True,
-            },
-        )
-        val_set = _build_grouped_dataset(
-            dataset_cfg=val_dataset_cfg,
-            split="val",
-            seed=seed + 100000,
-            data_cfg=data_cfg,
-            signal_cfg=signal_cfg,
-            freq_lower=freq_lower,
-            freq_upper=freq_upper,
-            frequency_rho=frequency_rho,
-            amp_real_rho=amp_real_rho,
-            amp_imag_rho=amp_imag_rho,
-        )
-
-    if not train_dataset_cfg.get("chronological_split", False):
-        if test_dataset_cfg is not None:
-            test_set = _build_grouped_dataset(
-                dataset_cfg=test_dataset_cfg,
-                split="test",
-                seed=seed + 200000,
-                data_cfg=data_cfg,
-                signal_cfg=signal_cfg,
-                freq_lower=freq_lower,
-                freq_upper=freq_upper,
-                frequency_rho=frequency_rho,
-                amp_real_rho=amp_real_rho,
-                amp_imag_rho=amp_imag_rho,
-            )
-        else:
-            test_set = None
+    train_set = _build_grouped_dataset(
+        dataset_cfg=train_dataset_cfg,
+        split="train",
+        seed=seed,
+        data_cfg=data_cfg,
+        signal_cfg=signal_cfg,
+        freq_lower=freq_lower,
+        freq_upper=freq_upper,
+        frequency_rho=frequency_rho,
+        amp_real_rho=amp_real_rho,
+        amp_imag_rho=amp_imag_rho,
+    )
+    val_set = _build_grouped_dataset(
+        dataset_cfg=train_dataset_cfg,
+        split="val",
+        seed=seed,
+        data_cfg=data_cfg,
+        signal_cfg=signal_cfg,
+        freq_lower=freq_lower,
+        freq_upper=freq_upper,
+        frequency_rho=frequency_rho,
+        amp_real_rho=amp_real_rho,
+        amp_imag_rho=amp_imag_rho,
+    )
+    test_set = _build_grouped_dataset(
+        dataset_cfg=train_dataset_cfg,
+        split="test",
+        seed=seed,
+        data_cfg=data_cfg,
+        signal_cfg=signal_cfg,
+        freq_lower=freq_lower,
+        freq_upper=freq_upper,
+        frequency_rho=frequency_rho,
+        amp_real_rho=amp_real_rho,
+        amp_imag_rho=amp_imag_rho,
+    )
 
     train_loader = DataLoader(
         train_set,
@@ -522,11 +461,19 @@ def main():
             drop_last=False,
         )
     window_num_cycles = getattr(train_set, "window_num_cycles", data_cfg["num_cycles"])
+    window_length = int(window_num_cycles) * int(data_cfg["num_probes"])
+    parent_num_cycles = getattr(train_set, "parent_num_cycles", window_num_cycles)
+    parent_sequence_length = int(parent_num_cycles) * int(data_cfg["num_probes"])
+    train_windows_per_parent = None
+    if getattr(train_set, "parent_window_starts", None):
+        train_windows_per_parent = len(next(iter(train_set.parent_window_starts.values())))
     print(
         "Datasets: "
-        f"train_sequences={len(train_set)}, val_sequences={len(val_set)}, "
-        f"test_sequences={len(test_set) if test_set is not None else 0}, "
-        f"sequence_length={window_num_cycles * data_cfg['num_probes']}"
+        f"train_parent_sequences={len(train_set)}, val_parent_sequences={len(val_set)}, "
+        f"test_parent_sequences={len(test_set) if test_set is not None else 0}, "
+        f"window_length={window_length}, "
+        f"parent_sequence_length={parent_sequence_length}, "
+        f"train_windows_per_parent={train_windows_per_parent}"
     )
 
     posterior_cfg = freq_cfg.get("posterior", {})

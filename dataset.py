@@ -528,9 +528,9 @@ class GroupedBTTSequenceDataset(Dataset):
             raise ValueError("train_ratio must be in (0, 1)")
         if not (0.0 <= self.val_ratio < 1.0):
             raise ValueError("val_ratio must be in [0, 1)")
-        if self.chronological_split and self.train_ratio + self.val_ratio >= 1.0:
+        if self.train_ratio + self.val_ratio >= 1.0:
             raise ValueError(
-                "chronological split requires train_ratio + val_ratio < 1"
+                "split requires train_ratio + val_ratio < 1"
             )
 
         if self.use_long_sequence:
@@ -604,10 +604,13 @@ class GroupedBTTSequenceDataset(Dataset):
         self.index = []
         self.parent_window_starts = {}
         self.parent_cache = {}
+        total_parent_sequences = self.num_param_sets * self.sequences_per_param
         for param_id in range(self.num_param_sets):
             for seq_id in range(self.sequences_per_param):
                 parent_id = len(self.parent_specs)
                 self.parent_specs.append((param_id, seq_id))
+                if not self._parent_in_split(parent_id, total_parent_sequences):
+                    continue
                 if self.use_long_sequence:
                     start_cycles = [
                         int(start_cycle)
@@ -629,6 +632,23 @@ class GroupedBTTSequenceDataset(Dataset):
 
         if len(self.index) == 0:
             raise ValueError(f"No samples generated for split={split}. Check dataset config.")
+
+    def _parent_in_split(self, parent_id, total_parent_sequences):
+        if self.chronological_split or self.split == "all":
+            return True
+
+        train_count = int(np.floor(self.train_ratio * total_parent_sequences))
+        val_count = int(np.floor(self.val_ratio * total_parent_sequences))
+        val_start = train_count
+        test_start = train_count + val_count
+
+        if self.split == "train":
+            return int(parent_id) < train_count
+        if self.split == "val":
+            return val_start <= int(parent_id) < test_start
+        if self.split == "test":
+            return int(parent_id) >= test_start
+        raise RuntimeError("Invalid split state")
 
     def _make_window_start_cycles(self, total_cycles):
         all_start_cycles = np.arange(
