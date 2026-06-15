@@ -140,7 +140,7 @@ PLOT_META = {
     "exp2_num_cycles": ("Cycles per sequence", "Sequence length"),
     "exp3_num_probes": ("Number of probes", "Probe number"),
     "exp4_num_harmonics": ("Number of sinusoids K", "Number of sinusoids"),
-    "exp5_relative_half_band": ("Relative half band", "Frequency search band"),
+    "exp5_half_band_hz": ("Half band (Hz)", "Frequency search band"),
     "exp6_sequence_posterior_samples": ("Posterior samples per sequence", "Posterior sampling"),
     "exp7_amp_prior_band": ("Amplitude relative half band", "Amplitude prior band"),
     "exp8_max_log_rho2": ("max_log_rho2", "Posterior frequency std upper bound"),

@@ -38,21 +38,25 @@ PROBE_CONFIGS = {
 K_CONFIGS = {
     1: {
         "center_hz": [341.0],
+        "half_band_hz": [17.05],
         "amp_real_center_m": [0.0005403],
         "amp_imag_center_m": [0.0008415],
     },
     2: {
         "center_hz": [167.0, 341.0],
+        "half_band_hz": [8.35, 17.05],
         "amp_real_center_m": [0.0006, 0.0005403],
         "amp_imag_center_m": [0.0, 0.0008415],
     },
     3: {
         "center_hz": [167.0, 341.0, 635.0],
+        "half_band_hz": [8.35, 17.05, 31.75],
         "amp_real_center_m": [0.0006, 0.0005403, -0.0003329],
         "amp_imag_center_m": [0.0, 0.0008415, 0.0007274],
     },
     4: {
         "center_hz": [167.0, 341.0, 635.0, 872.0],
+        "half_band_hz": [8.35, 17.05, 31.75, 43.6],
         "amp_real_center_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
         "amp_imag_center_m": [0.0, 0.0008415, 0.0007274, 0.0001270],
     },
@@ -83,7 +87,10 @@ def build_experiment_grid(experiment, base_cfg):
                     k,
                     {
                         "data": {"num_harmonics": k},
-                        "frequency": {"center_hz": cfg["center_hz"]},
+                        "frequency": {
+                            "center_hz": cfg["center_hz"],
+                            "half_band_hz": cfg["half_band_hz"],
+                        },
                         "signal": {
                             "amp_real_center_m": cfg["amp_real_center_m"],
                             "amp_imag_center_m": cfg["amp_imag_center_m"],
@@ -93,9 +100,9 @@ def build_experiment_grid(experiment, base_cfg):
             )
         return grid
 
-    if experiment == "exp5_relative_half_band":
-        values = [0.01, 0.02, 0.05, 0.08, 0.10]
-        return [("relative_half_band", v, {"frequency": {"relative_half_band": v}}) for v in values]
+    if experiment == "exp5_half_band_hz":
+        values = base_cfg.get("experiment", {}).get("half_band_hz_values", [5.0, 10.0, 20.0, 40.0, 80.0])
+        return [("half_band_hz", v, {"frequency": {"half_band_hz": v}}) for v in values]
 
     if experiment == "exp6_sequence_posterior_samples":
         values = [1, 2, 4, 8, 10]

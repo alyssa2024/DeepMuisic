@@ -125,6 +125,7 @@ def build_model(data_cfg, model_cfg, freq_cfg, freq_lower, freq_upper, device):
         c_init_logvar=model_cfg.get("c_init_logvar", -4.0),
         z1_init_logvar=model_cfg.get("z1_init_logvar", 0.0),
         delta_init_logvar=model_cfg.get("delta_init_logvar", -6.0),
+        phase_innovation_enabled=model_cfg.get("phase_innovation_enabled", True),
     )
     return SequentialPhysicalHarmonicVAE(encoder=encoder).to(device)
 
@@ -134,6 +135,25 @@ def evaluate(model, loader, loss_cfg, device, max_batches=None):
     model.eval()
     sums = {}
     batches = 0
+    success_cfg = loss_cfg.get("success", {})
+    freq_relative_tol = float(success_cfg.get("freq_relative_tol", 0.02))
+    amp_relative_tol = float(success_cfg.get("amp_relative_tol", 0.05))
+
+    total_sequences = 0
+    total_phase_elements = 0
+    total_freq_elements = 0
+    num_harmonics = None
+    freq_abs_err_sum = None
+    freq_sqerr_sum = None
+    freq_nsqerr_sum = None
+    freq_success_sum = None
+    amp_abs_err_sum = None
+    amp_success_sum = None
+    phase_circ_err_sum_h = None
+    phase_circ_err_total = 0.0
+    freq_sequence_success_sum = 0.0
+    amp_sequence_success_sum = 0.0
+
     for batch in loader:
         batch = move_batch_to_device(batch, device)
         outputs = model(batch, sample=False)
@@ -144,18 +164,127 @@ def evaluate(model, loader, loss_cfg, device, max_batches=None):
             loss_cfg=loss_cfg,
             global_step=None,
         )
+        target = torch.complex(batch["y"][..., 0], batch["y"][..., 1])
+        recon_mse = torch.mean(torch.abs(outputs["y_hat"] - target) ** 2)
         freq_mae = (outputs["mu_f"] - batch["true_freq_hz"]).abs().mean()
         diagnostics = dict(diagnostics)
+        diagnostics["recon_mse_mean"] = recon_mse.detach()
         diagnostics["freq_mae_hz"] = freq_mae.detach()
         diagnostics["loss"] = loss.detach()
         for key, value in diagnostics.items():
             if torch.is_tensor(value) and value.numel() == 1:
                 sums[key] = sums.get(key, 0.0) + float(value.detach().cpu())
+
+        true_freq = batch["true_freq_hz"].to(device=outputs["mu_f"].device, dtype=outputs["mu_f"].dtype)
+        mu_f = outputs["mu_f"]
+        n, k_count = mu_f.shape
+        if num_harmonics is None:
+            num_harmonics = int(k_count)
+            freq_abs_err_sum = torch.zeros(num_harmonics, dtype=torch.float64)
+            freq_sqerr_sum = torch.zeros(num_harmonics, dtype=torch.float64)
+            freq_nsqerr_sum = torch.zeros(num_harmonics, dtype=torch.float64)
+            freq_success_sum = torch.zeros(num_harmonics, dtype=torch.float64)
+            amp_abs_err_sum = torch.zeros(num_harmonics, dtype=torch.float64)
+            amp_success_sum = torch.zeros(num_harmonics, dtype=torch.float64)
+            phase_circ_err_sum_h = torch.zeros(num_harmonics, dtype=torch.float64)
+
+        freq_err = mu_f - true_freq
+        freq_abs_err = freq_err.abs()
+        freq_half = model.encoder.freq_half.to(device=mu_f.device, dtype=mu_f.dtype).view(1, -1)
+        freq_norm_err = freq_err / freq_half.clamp_min(1e-12)
+        freq_rel_err = freq_abs_err / true_freq.abs().clamp_min(1e-12)
+        freq_ok = freq_rel_err <= freq_relative_tol
+
+        true_amp = torch.complex(
+            batch["true_amp_real"].to(device=mu_f.device, dtype=mu_f.dtype),
+            batch["true_amp_imag"].to(device=mu_f.device, dtype=mu_f.dtype),
+        )
+        amp_scale = batch["amp_scale"].to(device=mu_f.device, dtype=mu_f.dtype).view(-1, 1)
+        true_amp_mag_norm = true_amp.abs() / amp_scale.clamp_min(1e-12)
+        amp_abs_err = (outputs["amp_mu"] - true_amp_mag_norm).abs()
+        amp_rel_err = amp_abs_err / true_amp_mag_norm.clamp_min(1e-12)
+        amp_ok = amp_rel_err <= amp_relative_tol
+
+        true_phase0 = torch.angle(true_amp).to(dtype=outputs["z_seq"].dtype)
+        true_phase_seq = (
+            true_phase0[:, None, :]
+            + 2.0
+            * math.pi
+            * true_freq[:, None, :].to(dtype=outputs["z_seq"].dtype)
+            * batch["s"][:, :, None].to(device=mu_f.device, dtype=outputs["z_seq"].dtype)
+        )
+        phase_delta = outputs["z_seq"] - true_phase_seq
+        phase_circ_err = torch.abs(torch.atan2(torch.sin(phase_delta), torch.cos(phase_delta)))
+
+        total_sequences += int(n)
+        total_freq_elements += int(n * k_count)
+        total_phase_elements += int(phase_circ_err.numel())
+        freq_abs_err_sum += freq_abs_err.sum(dim=0).double().cpu()
+        freq_sqerr_sum += freq_err.pow(2).sum(dim=0).double().cpu()
+        freq_nsqerr_sum += freq_norm_err.pow(2).sum(dim=0).double().cpu()
+        freq_success_sum += freq_ok.float().sum(dim=0).double().cpu()
+        amp_abs_err_sum += amp_abs_err.sum(dim=0).double().cpu()
+        amp_success_sum += amp_ok.float().sum(dim=0).double().cpu()
+        phase_circ_err_sum_h += phase_circ_err.sum(dim=(0, 1)).double().cpu()
+        phase_circ_err_total += float(phase_circ_err.sum().detach().cpu())
+        freq_sequence_success_sum += float(torch.all(freq_ok, dim=1).float().sum().detach().cpu())
+        amp_sequence_success_sum += float(torch.all(amp_ok, dim=1).float().sum().detach().cpu())
+
         batches += 1
         if max_batches is not None and batches >= int(max_batches):
             break
     denom = max(batches, 1)
-    return {key: value / denom for key, value in sums.items()}
+    metrics = {key: value / denom for key, value in sums.items()}
+    if num_harmonics is None:
+        return metrics
+
+    total_sequences = max(total_sequences, 1)
+    total_freq_elements = max(total_freq_elements, 1)
+    total_phase_elements = max(total_phase_elements, 1)
+    phase_den = total_phase_elements // max(num_harmonics, 1)
+    freq_mae_h = freq_abs_err_sum / total_sequences
+    freq_rmse_h = torch.sqrt(freq_sqerr_sum / total_sequences)
+    freq_nrmse_h = torch.sqrt(freq_nsqerr_sum / total_sequences)
+    freq_success_h = freq_success_sum / total_sequences
+    amp_mae_h = amp_abs_err_sum / total_sequences
+    amp_success_h = amp_success_sum / total_sequences
+    phase_circ_mae_h = phase_circ_err_sum_h / max(phase_den, 1)
+
+    metrics.update(
+        {
+            "freq_mae_hz_mean": float(freq_abs_err_sum.sum() / total_freq_elements),
+            "freq_rmse_hz_mean": float(torch.sqrt(freq_sqerr_sum.sum() / total_freq_elements)),
+            "freq_nrmse_band_mean": float(torch.sqrt(freq_nsqerr_sum.sum() / total_freq_elements)),
+            "freq_nrmse_hz_mean": float(torch.sqrt(freq_nsqerr_sum.sum() / total_freq_elements)),
+            "freq_nrmse_hz": float(torch.sqrt(freq_nsqerr_sum.sum() / total_freq_elements)),
+            "freq_success_rate_mean": freq_sequence_success_sum / total_sequences,
+            "freq_detection_success_rate": freq_sequence_success_sum / total_sequences,
+            "amp_mae_mean": float(amp_abs_err_sum.sum() / total_freq_elements),
+            "amp_mae_hz_mean": float(amp_abs_err_sum.sum() / total_freq_elements),
+            "amp_mae_hz": float(amp_abs_err_sum.sum() / total_freq_elements),
+            "amp_success_rate_mean": amp_sequence_success_sum / total_sequences,
+            "amp_detection_success_rate": amp_sequence_success_sum / total_sequences,
+            "phase_circ_err_sum": phase_circ_err_total,
+            "phase_circ_mae_rad": phase_circ_err_total / total_phase_elements,
+        }
+    )
+    metrics["freq_mae_hz"] = metrics["freq_mae_hz_mean"]
+    for k in range(num_harmonics):
+        h = k + 1
+        metrics[f"freq_mae_h{h}_hz"] = float(freq_mae_h[k])
+        metrics[f"freq_rmse_h{h}_hz"] = float(freq_rmse_h[k])
+        metrics[f"freq_nrmse_h{h}_band"] = float(freq_nrmse_h[k])
+        metrics[f"freq_nrmse_h{h}_hz"] = float(freq_nrmse_h[k])
+        metrics[f"freq_success_h{h}"] = float(freq_success_h[k])
+        metrics[f"freq_detection_success_h{h}"] = float(freq_success_h[k])
+        metrics[f"amp_mae_h{h}"] = float(amp_mae_h[k])
+        metrics[f"amp_mae_h{h}_hz"] = float(amp_mae_h[k])
+        metrics[f"amp_abs_err_h{h}_m"] = float(amp_mae_h[k])
+        metrics[f"amp_success_h{h}"] = float(amp_success_h[k])
+        metrics[f"amp_success_h{h}_magnitude"] = float(amp_success_h[k])
+        metrics[f"amp_detection_success_h{h}"] = float(amp_success_h[k])
+        metrics[f"phase_circ_mae_h{h}_rad"] = float(phase_circ_mae_h[k])
+    return metrics
 
 
 def main():
@@ -177,7 +306,7 @@ def main():
 
     freq_lower, freq_upper, freq_center, freq_half_band = compute_frequency_support(
         freq_center_hz=freq_cfg["center_hz"],
-        relative_half_band=freq_cfg["relative_half_band"],
+        half_band_hz=freq_cfg["half_band_hz"],
     )
     print(f"Frequency centers: {freq_center}")
     print(f"Frequency half bands: {freq_half_band}")
@@ -266,15 +395,29 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
 
+    start_epoch = 0
+    total_steps = 0
+    resume_from = ckpt_cfg.get("resume_from")
+    if resume_from:
+        checkpoint = torch.load(resume_from, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if ckpt_cfg.get("resume_optimizer", True):
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = int(checkpoint.get("epoch", -1)) + 1
+        total_steps = int(checkpoint.get("total_steps", 0))
+        print(
+            "Resumed checkpoint "
+            f"from {resume_from} at epoch={start_epoch}, total_steps={total_steps}"
+        )
+
     writer = None
     log_cfg = CONFIG.get("logging", {})
     if log_cfg.get("enable_tensorboard", True) and SummaryWriter is not None:
         writer = SummaryWriter(log_dir=log_cfg.get("tensorboard_dir", "artifacts/tensorboard"))
 
-    total_steps = 0
     best_val = float("inf")
     best_metrics = None
-    for epoch in range(int(train_cfg["epochs"])):
+    for epoch in range(start_epoch, int(train_cfg["epochs"])):
         model.train()
         train_sums = {}
         train_batches = 0
@@ -360,7 +503,7 @@ def main():
         path=ckpt_path,
         model=model,
         optimizer=optimizer,
-        epoch=int(train_cfg["epochs"]) - 1,
+        epoch=max(int(train_cfg["epochs"]) - 1, start_epoch - 1),
         total_steps=total_steps,
     )
 

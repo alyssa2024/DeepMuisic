@@ -325,8 +325,13 @@ class SequentialDSAEEncoder(torch.nn.Module):
         c_init_logvar=-4.0,
         z1_init_logvar=0.0,
         delta_init_logvar=-6.0,
+        phase_innovation_enabled=True,
     ):
         super().__init__()
+        # When disabled, the per-step phase innovation delta_z is forced to 0 in
+        # the phase recurrence, so all cross-window phase progression must be
+        # explained by 2*pi*f*ds. Diagnostic switch for frequency identifiability.
+        self.phase_innovation_enabled = bool(phase_innovation_enabled)
         self.output_dim = int(output_dim)
         self.num_harmonics = int(output_dim)
         self.input_dim = int(input_dim)
@@ -529,6 +534,8 @@ class SequentialDSAEEncoder(torch.nn.Module):
             delta_mu = delta_params[:, : self.num_harmonics]
             delta_logvar = delta_params[:, self.num_harmonics :].clamp(min=-20.0, max=10.0)
             delta_z = self.reparameterize(delta_mu, delta_logvar, sample=sample)
+            if not self.phase_innovation_enabled:
+                delta_z = torch.zeros_like(delta_z)
             z_prev = z_prev + 2.0 * math.pi * f_sample * ds + delta_z
             z_seq.append(z_prev)
             delta_mus.append(delta_mu)

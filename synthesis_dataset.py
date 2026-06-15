@@ -107,19 +107,21 @@ def generate_complex_harmonic_displacement(
     return x_t_noisy, x_t, noise_power
 
 
-def compute_frequency_support(freq_center_hz, relative_half_band):
+def compute_frequency_support(freq_center_hz, half_band_hz):
     centers = np.asarray(freq_center_hz, dtype=np.float64)
-    rel = np.asarray(relative_half_band, dtype=np.float64)
+    half_band = np.asarray(half_band_hz, dtype=np.float64)
 
-    if rel.ndim == 0:
-        rel = np.full_like(centers, float(rel))
+    if half_band.ndim == 0:
+        half_band = np.full_like(centers, float(half_band))
 
-    if rel.shape != centers.shape:
+    if half_band.shape != centers.shape:
         raise ValueError(
-            f"relative_half_band shape {rel.shape} must be scalar or match centers {centers.shape}"
+            f"half_band_hz shape {half_band.shape} must be scalar or match centers {centers.shape}"
         )
 
-    half_band = rel * centers
+    if np.any(half_band <= 0):
+        raise ValueError("frequency half_band_hz must be positive")
+
     lower = centers - half_band
     upper = centers + half_band
 

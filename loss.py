@@ -1793,12 +1793,35 @@ def compute_sequential_dsae_elbo(
     beta_delta = float(loss_cfg.get("beta_delta", 1.0))
 
     freq_kl = beta_anneal * freq_kl_raw
+    freq_sup_cfg = loss_cfg.get("frequency_supervision", {})
+    freq_supervision_loss = torch.zeros_like(recon_nll)
+    freq_supervision_weighted = torch.zeros_like(recon_nll)
+    if bool(freq_sup_cfg.get("enabled", False)):
+        if "true_freq_hz" not in batch:
+            raise ValueError(
+                "loss.frequency_supervision.enabled=True requires batch['true_freq_hz']"
+            )
+        freq_half = model.encoder.freq_half.to(
+            device=outputs["mu_f"].device,
+            dtype=outputs["mu_f"].dtype,
+        ).view(1, -1)
+        true_freq = batch["true_freq_hz"].to(
+            device=outputs["mu_f"].device,
+            dtype=outputs["mu_f"].dtype,
+        )
+        freq_supervision_loss = (
+            (outputs["mu_f"] - true_freq) / freq_half.clamp_min(1e-8)
+        ).pow(2).mean()
+        freq_supervision_weighted = (
+            float(freq_sup_cfg.get("weight", 1.0)) * freq_supervision_loss
+        )
     loss = (
         recon_weight * recon_nll
         + beta_freq * freq_kl
         + beta_amp * amp_kl_raw
         + beta_z1 * z1_kl_raw
         + beta_delta * delta_kl_raw
+        + freq_supervision_weighted
     )
 
     if outputs["z_seq"].shape[1] > 1:
@@ -1822,6 +1845,8 @@ def compute_sequential_dsae_elbo(
         "recon_mse_sampled": recon_mse.detach(),
         "freq_kl": freq_kl.detach(),
         "freq_kl_raw": freq_kl_raw.detach(),
+        "freq_supervision_loss": freq_supervision_loss.detach(),
+        "freq_supervision_weighted": freq_supervision_weighted.detach(),
         "amp_kl": amp_kl_raw.detach(),
         "amp_kl_raw": amp_kl_raw.detach(),
         "z1_kl": z1_kl_raw.detach(),

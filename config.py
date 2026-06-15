@@ -12,7 +12,7 @@ CONFIG = {
     },
     "data": {
         "input_dim": 7,
-        "num_harmonics": 4,
+        "num_harmonics": 5,
         "num_probes": 4,
         "base_freq": 150.0,
         "fluctuation_delta": 0.001,
@@ -39,10 +39,13 @@ CONFIG = {
         "normalization": "per_sequence_std",
     },
     "signal": {
-        "amp_real_center_m": [0.0006, 0.0005403, -0.0003329, -0.0008910],
-        "amp_imag_center_m": [0.0004, 0.0008415, 0.0007274, 0.0001270],
-        "rho_amp_real_k": [0.0, 0.0, 0.0, 0.0],
-        "rho_amp_imag_k": [0.0, 0.0, 0.0, 0.0],
+        # amp_*_center_m are unused under amp_data_prior.type="uniform_polar"
+        # (data amplitudes are |c|~U(0,1), random phase); only the length must
+        # equal num_harmonics=5 to pass the dataset shape check.
+        "amp_real_center_m": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "amp_imag_center_m": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "rho_amp_real_k": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "rho_amp_imag_k": [0.0, 0.0, 0.0, 0.0, 0.0],
         "amp_data_prior": {
             # Single-carrier phase model: amplitude is a real non-negative
             # magnitude (uniform in [0, 1]) and the phase is uniform in
@@ -56,8 +59,8 @@ CONFIG = {
         "snr_db": 20,
     },
     "frequency": {
-        "center_hz": [217.0, 341.0, 635.0, 872.0],
-        "relative_half_band": 0.05,
+        "center_hz": [140.0, 157.0, 174.0, 191.0, 208.0],
+        "half_band_hz": [6.0, 6.0, 6.0, 6.0, 6.0],
         "posterior": {
             "min_log_rho2": -12.0,
             "max_log_rho2": -4.0,
@@ -92,6 +95,10 @@ CONFIG = {
             "include_log_const": True,
             "normalize_by_num_points": False,
         },
+        "frequency_supervision": {
+            "enabled": False,
+            "weight": 0.0,
+        },
         "sequential": {
             "z1_prior_var": 1.0,
             "delta_prior_var": 0.01,
@@ -104,7 +111,7 @@ CONFIG = {
     },
     "training": {
         "epochs": 200,
-        "lr": 2e-5,
+        "lr": 1e-4,
         "freeze_encoder_train_amp_head_only": False,
         "amp_head_train_mode": "bias_only",
         "amp_head_lr": 1e-2,
@@ -117,14 +124,16 @@ CONFIG = {
             "apply_to_encoder": True,
         },
         "lr_schedule": {
-            "type": "constant",
+            "type": "warmup_cosine",
+            "warmup_steps": 1000,
+            "min_lr": 1e-6,
         },
         "early_stopping": {
             "enabled": False,
-            "monitor": "loss",
+            "monitor": "recon_mse_mean",
             "mode": "min",
             "patience": 10,
-            "min_delta": 1e-4,
+            "min_delta": 1e-5,
         },
     },
     "eval": {
@@ -137,6 +146,7 @@ CONFIG = {
         "name": "latest.pt",
         "save_every": 20,
         "resume_from": None,
+        "resume_optimizer": True,
     },
     "logging": {
         "enable_tensorboard": True,
