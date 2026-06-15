@@ -1670,3 +1670,175 @@ def compute_static_global_objective(
     )
 
     return loss, recon_loss, freq_kl_weighted, diagnostics
+
+
+def diag_gaussian_kl(mu_q, logvar_q, mu_p=0.0, var_p=1.0, eps=1e-8):
+    var_q = torch.exp(logvar_q).clamp_min(eps)
+    if torch.is_tensor(mu_p):
+        mu_p = mu_p.to(device=mu_q.device, dtype=mu_q.dtype)
+    if torch.is_tensor(var_p):
+        var_p = var_p.to(device=mu_q.device, dtype=mu_q.dtype).clamp_min(eps)
+    else:
+        var_p = max(float(var_p), eps)
+    return 0.5 * (
+        torch.log(torch.as_tensor(var_p, device=mu_q.device, dtype=mu_q.dtype))
+        - torch.log(var_q)
+        + (var_q + (mu_q - mu_p) ** 2) / var_p
+        - 1.0
+    ).sum(dim=-1)
+
+
+def complex_sequence_nll(
+    y_hat,
+    target_ri,
+    noise_var_norm,
+    include_log_const=True,
+    normalize_by_num_points=True,
+    eps=1e-8,
+):
+    if not torch.is_complex(y_hat):
+        raise TypeError(f"y_hat must be complex, got {y_hat.dtype}")
+    if target_ri.shape != y_hat.shape + (2,):
+        raise ValueError(
+            f"target_ri shape {target_ri.shape} must equal y_hat shape {y_hat.shape} + (2,)"
+        )
+    target = torch.complex(target_ri[..., 0], target_ri[..., 1])
+    sigma2 = noise_var_norm.to(device=y_hat.device, dtype=y_hat.real.dtype).clamp_min(eps)
+    view_shape = (sigma2.shape[0],) + (1,) * (y_hat.ndim - 1)
+    sigma2_view = sigma2.view(view_shape)
+    residual2 = torch.abs(target - y_hat) ** 2
+    nll_per_item = (residual2 / sigma2_view).reshape(y_hat.shape[0], -1).sum(dim=-1)
+    num_points = residual2[0].numel()
+    if include_log_const:
+        nll_per_item = nll_per_item + num_points * (
+            torch.log(sigma2) + math.log(math.pi)
+        )
+    nll = nll_per_item.mean()
+    if normalize_by_num_points:
+        nll = nll / float(max(num_points, 1))
+    mse = residual2.mean()
+    return nll, mse, nll_per_item.detach()
+
+
+def compute_sequential_dsae_elbo(
+    batch,
+    outputs,
+    model,
+    loss_cfg,
+    global_step=None,
+):
+    """
+    Sequential-DSAE negative ELBO for BTT patch sequences.
+    """
+    rec_cfg = loss_cfg.get("reconstruction", {})
+    recon_nll, recon_mse, nll_per_item = complex_sequence_nll(
+        y_hat=outputs["y_hat"],
+        target_ri=batch["y"],
+        noise_var_norm=batch["noise_var_norm"],
+        include_log_const=bool(rec_cfg.get("include_log_const", True)),
+        normalize_by_num_points=bool(rec_cfg.get("normalize_by_num_points", True)),
+    )
+
+    freq_kl_per_item = compute_frequency_kl(
+        mu_f=outputs["mu_f"],
+        std_f=outputs["std_f"],
+        model=model,
+        loss_cfg=loss_cfg,
+    )
+    freq_kl_raw = freq_kl_per_item.sum(dim=-1).mean()
+    beta_anneal = compute_beta_anneal(loss_cfg=loss_cfg, step=global_step)
+
+    logamp_prior_mean = float(loss_cfg.get("logamp_prior_mean", 0.0))
+    logamp_prior_var = float(loss_cfg.get("logamp_prior_var", 1.0))
+    amp_kl_per_item = diag_gaussian_kl(
+        outputs["logamp_mu"],
+        outputs["logamp_logvar"],
+        mu_p=logamp_prior_mean,
+        var_p=logamp_prior_var,
+    )   # [N]，已对 K 求和
+    amp_kl_raw = amp_kl_per_item.mean()
+
+    seq_cfg = loss_cfg.get("sequential", {})
+    phase_distribution = seq_cfg.get("phase_distribution", "unwrapped_gaussian")
+    if phase_distribution != "unwrapped_gaussian":
+        raise ValueError(
+            "Only sequential.phase_distribution='unwrapped_gaussian' is implemented. "
+            "Von Mises phase posteriors require circular reparameterization and KL."
+        )
+    z1_prior_var = float(seq_cfg.get("z1_prior_var", loss_cfg.get("z1_prior_var", 1.0)))
+    delta_prior_var = float(
+        seq_cfg.get("delta_prior_var", loss_cfg.get("delta_prior_var", 1e-2))
+    )
+    z1_kl_raw = diag_gaussian_kl(
+        outputs["z1_mu"],
+        outputs["z1_logvar"],
+        var_p=z1_prior_var,
+    ).mean()
+
+    if outputs["delta_mu"].numel() == 0:
+        delta_kl_raw = torch.zeros_like(z1_kl_raw)
+    else:
+        N, steps = outputs["delta_mu"].shape[0], outputs["delta_mu"].shape[1]
+        delta_kl_per_step = diag_gaussian_kl(
+            outputs["delta_mu"].reshape(-1, model.num_harmonics),
+            outputs["delta_logvar"].reshape(-1, model.num_harmonics),
+            var_p=delta_prior_var,
+        )                                   # [N*steps]，已对 K 求和
+        delta_kl_raw = delta_kl_per_step.reshape(N, steps).sum(dim=1).mean()
+
+    recon_weight = float(loss_cfg.get("reconstruction_weight", 1.0))
+    beta_freq = float(loss_cfg.get("beta_freq", 1.0))
+    beta_amp = float(loss_cfg.get("beta_amp", loss_cfg.get("amplitude_kl", {}).get("beta_amp", 1.0)))
+    beta_z1 = float(loss_cfg.get("beta_z1", 1.0))
+    beta_delta = float(loss_cfg.get("beta_delta", 1.0))
+
+    freq_kl = beta_anneal * freq_kl_raw
+    loss = (
+        recon_weight * recon_nll
+        + beta_freq * freq_kl
+        + beta_amp * amp_kl_raw
+        + beta_z1 * z1_kl_raw
+        + beta_delta * delta_kl_raw
+    )
+
+    if outputs["z_seq"].shape[1] > 1:
+        residual = (
+            outputs["z_seq"][:, 1:]
+            - outputs["z_seq"][:, :-1]
+            - 2.0
+            * math.pi
+            * outputs["f_sample"].unsqueeze(1)
+            * batch["delta_s"][:, 1:].unsqueeze(-1).to(outputs["z_seq"].device)
+        )
+        transition_residual = residual.abs().mean()
+    else:
+        transition_residual = torch.zeros_like(recon_nll)
+
+    diagnostics = {
+        "loss": loss.detach(),
+        "optimization_loss": loss.detach(),
+        "recon_loss": recon_nll.detach(),
+        "recon_nll": recon_nll.detach(),
+        "recon_mse_sampled": recon_mse.detach(),
+        "freq_kl": freq_kl.detach(),
+        "freq_kl_raw": freq_kl_raw.detach(),
+        "amp_kl": amp_kl_raw.detach(),
+        "amp_kl_raw": amp_kl_raw.detach(),
+        "z1_kl": z1_kl_raw.detach(),
+        "delta_kl": delta_kl_raw.detach(),
+        "posterior_std_hz_mean": outputs["std_f"].mean().detach(),
+        "amp_post_std_mean": torch.exp(0.5 * outputs["logamp_logvar"]).mean().detach(),
+        "phase_innovation_std_mean": (
+            torch.exp(0.5 * outputs["delta_logvar"]).mean().detach()
+            if outputs["delta_logvar"].numel() > 0
+            else torch.zeros_like(recon_nll).detach()
+        ),
+        "transition_residual_mean": transition_residual.detach(),
+        "freq_kl_beta_anneal": torch.as_tensor(
+            beta_anneal,
+            device=loss.device,
+            dtype=loss.dtype,
+        ).detach(),
+        "nll_per_item_mean": nll_per_item.mean().to(loss.device).detach(),
+    }
+    return loss, recon_nll, freq_kl, diagnostics

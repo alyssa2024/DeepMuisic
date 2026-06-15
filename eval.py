@@ -16,6 +16,7 @@ from loss import (
     compute_sequence_strict_global_elbo_recon_loss,
     sample_sequence_frequencies,
 )
+from loss import compute_sequential_dsae_elbo
 
 
 def _complex_ri_mse(x_hat_complex: torch.Tensor, target_ri: torch.Tensor) -> torch.Tensor:
@@ -39,6 +40,51 @@ def _align_local_complex_coeff_to_global_time(
 ) -> torch.Tensor:
     phase_shift = 2.0 * torch.pi * freq_hz * t0[:, None]
     return local_complex * torch.exp(-1j * phase_shift)
+
+
+@torch.no_grad()
+def evaluate_sequential_model(
+    model,
+    dataloader,
+    loss_cfg,
+    device,
+    max_batches=None,
+) -> Dict[str, float]:
+    """
+    Evaluation path for Sequential-DSAE batches.
+    """
+    model.eval()
+    sums = {}
+    batches = 0
+    for batch in dataloader:
+        batch = {
+            key: value.to(device) if torch.is_tensor(value) else value
+            for key, value in batch.items()
+        }
+        outputs = model(batch, sample=False)
+        loss, _, _, diagnostics = compute_sequential_dsae_elbo(
+            batch=batch,
+            outputs=outputs,
+            model=model,
+            loss_cfg=loss_cfg,
+            global_step=None,
+        )
+        target = torch.complex(batch["y"][..., 0], batch["y"][..., 1])
+        recon_mse = torch.mean(torch.abs(outputs["y_hat"] - target) ** 2)
+        freq_mae = torch.mean(torch.abs(outputs["mu_f"] - batch["true_freq_hz"]))
+        diagnostics = dict(diagnostics)
+        diagnostics["loss"] = loss.detach()
+        diagnostics["recon_btt_mse"] = recon_mse.detach()
+        diagnostics["freq_mae_hz"] = freq_mae.detach()
+        for key, value in diagnostics.items():
+            if torch.is_tensor(value) and value.numel() == 1:
+                sums[key] = sums.get(key, 0.0) + float(value.detach().cpu())
+        batches += 1
+        if max_batches is not None and batches >= int(max_batches):
+            break
+
+    denom = max(batches, 1)
+    return {key: value / denom for key, value in sums.items()}
 
 
 def _circular_abs_phase_error(

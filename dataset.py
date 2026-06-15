@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 from synthesis_dataset import (
     generate_one_btt_sequence,
     sample_amplitude_uniform,
+    sample_amplitude_uniform_polar,
     sample_frequency_uniform,
 )
 
@@ -304,6 +305,243 @@ def _build_sample_item(
     }
 
     return item
+
+
+class BTTSequentialPatchDataset(Dataset):
+    """
+    Multi-parameter, multi-sequence BTT dataset for the Sequential-DSAE model.
+
+    Each item is one parent sequence split into ordered patches. With the default
+    config this means 32 cycles per sequence and 8 cycles per patch, so the model
+    sees 4 ordered timesteps. No temporal pooling is performed here.
+    """
+
+    def __init__(
+        self,
+        split,
+        num_param_sets,
+        sequences_per_param,
+        sequence_num_cycles,
+        patch_num_cycles,
+        num_probes,
+        base_freq,
+        fluctuation_delta,
+        probe_angles,
+        freq_lower,
+        freq_upper,
+        amp_real_center,
+        amp_imag_center,
+        amp_relative_half_band,
+        amp_min_half_band,
+        snr_db,
+        seed=0,
+        normalization="per_sequence_std",
+        frequency_rho=None,
+        amp_real_rho=None,
+        amp_imag_rho=None,
+        amp_sampling="cartesian",
+        amp_magnitude_min=0.0,
+        amp_magnitude_max=1.0,
+        amp_phase_min=0.0,
+        amp_phase_max=2.0 * np.pi,
+    ):
+        self.split = split
+        self.num_param_sets = int(num_param_sets)
+        self.sequences_per_param = int(sequences_per_param)
+        self.sequence_num_cycles = int(sequence_num_cycles)
+        self.patch_num_cycles = int(patch_num_cycles)
+        self.num_probes = int(num_probes)
+        self.base_freq = float(base_freq)
+        self.fluctuation_delta = float(fluctuation_delta)
+        self.probe_angles = probe_angles
+        self.freq_lower = np.asarray(freq_lower, dtype=np.float64)
+        self.freq_upper = np.asarray(freq_upper, dtype=np.float64)
+        self.amp_real_center = np.asarray(amp_real_center, dtype=np.float64)
+        self.amp_imag_center = np.asarray(amp_imag_center, dtype=np.float64)
+        self.amp_relative_half_band = float(amp_relative_half_band)
+        self.amp_min_half_band = float(amp_min_half_band)
+        self.snr_db = snr_db
+        self.seed = int(seed)
+        self.normalization = normalization
+        self.frequency_rho = frequency_rho
+        self.amp_real_rho = amp_real_rho
+        self.amp_imag_rho = amp_imag_rho
+        self.amp_sampling = str(amp_sampling)
+        self.amp_magnitude_min = float(amp_magnitude_min)
+        self.amp_magnitude_max = float(amp_magnitude_max)
+        self.amp_phase_min = float(amp_phase_min)
+        self.amp_phase_max = float(amp_phase_max)
+        if self.amp_sampling not in ("cartesian", "polar"):
+            raise ValueError(
+                "amp_sampling must be 'cartesian' or 'polar', "
+                f"got {self.amp_sampling!r}"
+            )
+
+        if self.num_param_sets <= 0:
+            raise ValueError("num_param_sets must be positive")
+        if self.sequences_per_param <= 0:
+            raise ValueError("sequences_per_param must be positive")
+        if self.sequence_num_cycles <= 0:
+            raise ValueError("sequence_num_cycles must be positive")
+        if self.patch_num_cycles <= 0:
+            raise ValueError("patch_num_cycles must be positive")
+        if self.sequence_num_cycles % self.patch_num_cycles != 0:
+            raise ValueError(
+                "sequence_num_cycles must be divisible by patch_num_cycles. "
+                f"Got {self.sequence_num_cycles} and {self.patch_num_cycles}."
+            )
+        if self.freq_lower.shape != self.freq_upper.shape:
+            raise ValueError("freq_lower and freq_upper must have the same shape")
+        if self.amp_real_center.shape != self.freq_lower.shape:
+            raise ValueError("amp_real_center must match frequency shape")
+        if self.amp_imag_center.shape != self.freq_lower.shape:
+            raise ValueError("amp_imag_center must match frequency shape")
+
+        rng = np.random.default_rng(self.seed)
+        self.param_freq = []
+        self.param_amp_real = []
+        self.param_amp_imag = []
+        for param_id in range(self.num_param_sets):
+            freq_hz = _frequency_from_rho(
+                self.freq_lower,
+                self.freq_upper,
+                self.frequency_rho,
+                param_id=param_id,
+            )
+            if freq_hz is None:
+                freq_hz = sample_frequency_uniform(self.freq_lower, self.freq_upper, rng)
+
+            amp_real, amp_imag = _amplitude_from_rho(
+                amp_real_center=self.amp_real_center,
+                amp_imag_center=self.amp_imag_center,
+                relative_half_band=self.amp_relative_half_band,
+                min_half_band=self.amp_min_half_band,
+                amp_real_rho=self.amp_real_rho,
+                amp_imag_rho=self.amp_imag_rho,
+                param_id=param_id,
+            )
+            if amp_real is None:
+                if self.amp_sampling == "polar":
+                    amp_real, amp_imag = sample_amplitude_uniform_polar(
+                        num_harmonics=self.freq_lower.shape[0],
+                        magnitude_min=self.amp_magnitude_min,
+                        magnitude_max=self.amp_magnitude_max,
+                        phase_min=self.amp_phase_min,
+                        phase_max=self.amp_phase_max,
+                        rng=rng,
+                    )
+                else:
+                    amp_real, amp_imag = sample_amplitude_uniform(
+                        amp_real_center=self.amp_real_center,
+                        amp_imag_center=self.amp_imag_center,
+                        relative_half_band=self.amp_relative_half_band,
+                        min_half_band=self.amp_min_half_band,
+                        rng=rng,
+                    )
+            self.param_freq.append(freq_hz)
+            self.param_amp_real.append(amp_real)
+            self.param_amp_imag.append(amp_imag)
+
+        self.param_freq = np.asarray(self.param_freq, dtype=np.float64)
+        self.param_amp_real = np.asarray(self.param_amp_real, dtype=np.float64)
+        self.param_amp_imag = np.asarray(self.param_amp_imag, dtype=np.float64)
+        self.index = [
+            (param_id, seq_id)
+            for param_id in range(self.num_param_sets)
+            for seq_id in range(self.sequences_per_param)
+        ]
+
+    def __len__(self):
+        return len(self.index)
+
+    def _sequence_seed(self, param_id, seq_id):
+        split_offset = SPLIT_ID.get(self.split, 0) * 1000000007
+        return self.seed + split_offset + 1000003 * int(param_id) + 9176 * int(seq_id)
+
+    def __getitem__(self, idx):
+        param_id, seq_id = self.index[int(idx)]
+        rng = np.random.default_rng(self._sequence_seed(param_id, seq_id))
+        sample = generate_one_btt_sequence(
+            num_cycles=self.sequence_num_cycles,
+            base_freq=self.base_freq,
+            fluctuation_delta=self.fluctuation_delta,
+            probe_angles=self.probe_angles,
+            freq_hz=self.param_freq[param_id],
+            amp_real=self.param_amp_real[param_id],
+            amp_imag=self.param_amp_imag[param_id],
+            snr_db=self.snr_db,
+            rng=rng,
+        )
+
+        x_norm, amp_scale, noise_var_norm = _compute_normalization(
+            x_observed=sample["x_observed"],
+            noise_power=sample["noise_power"],
+            normalization=self.normalization,
+        )
+
+        num_patches = self.sequence_num_cycles // self.patch_num_cycles
+        points_per_patch = self.patch_num_cycles * self.num_probes
+        shape = (num_patches, points_per_patch)
+
+        x_patch = x_norm.reshape(shape)
+        t_patch = sample["t_samples"].reshape(shape)
+        theta_patch = sample["theta_samples"].reshape(shape)
+        probe_patch = sample["probe_ids"].reshape(shape)
+        speed_patch = sample["freqs_at_samples"].reshape(shape) / self.base_freq
+
+        s = t_patch[:, 0]
+        tau = t_patch - s[:, None]
+        patch_duration = np.maximum(t_patch[:, -1] - t_patch[:, 0], 1e-12)
+        tau_norm = tau / patch_duration[:, None]
+        delta_s = np.concatenate(([0.0], np.diff(s)))
+        delta_s_norm = delta_s * self.base_freq
+
+        features = np.stack(
+            [
+                np.real(x_patch),
+                np.imag(x_patch),
+                tau_norm,
+                np.sin(theta_patch),
+                np.cos(theta_patch),
+                speed_patch,
+                np.broadcast_to(delta_s_norm[:, None], shape),
+            ],
+            axis=-1,
+        ).astype(np.float32)
+        y = np.stack([np.real(x_patch), np.imag(x_patch)], axis=-1).astype(np.float32)
+
+        return {
+            "features": torch.as_tensor(features, dtype=torch.float32),
+            "y": torch.as_tensor(y, dtype=torch.float32),
+            "tau": torch.as_tensor(tau, dtype=torch.float32),
+            "s": torch.as_tensor(s, dtype=torch.float32),
+            "delta_s": torch.as_tensor(delta_s, dtype=torch.float32),
+            "probe_ids": torch.as_tensor(probe_patch, dtype=torch.long),
+            "true_freq_hz": torch.as_tensor(self.param_freq[param_id], dtype=torch.float32),
+            "true_amp_real": torch.as_tensor(self.param_amp_real[param_id], dtype=torch.float32),
+            "true_amp_imag": torch.as_tensor(self.param_amp_imag[param_id], dtype=torch.float32),
+            "amp_scale": torch.as_tensor(amp_scale, dtype=torch.float32),
+            "noise_var_norm": torch.as_tensor(noise_var_norm, dtype=torch.float32),
+            "dataset_mode": torch.as_tensor(DATASET_MODE["grouped_long_windows"], dtype=torch.long),
+            "split_id": torch.as_tensor(SPLIT_ID.get(self.split, -1), dtype=torch.long),
+            "use_long_sequence": torch.as_tensor(1, dtype=torch.long),
+            "chronological_split": torch.as_tensor(0, dtype=torch.long),
+            "num_param_sets": torch.as_tensor(self.num_param_sets, dtype=torch.long),
+            "sequences_per_param": torch.as_tensor(self.sequences_per_param, dtype=torch.long),
+            "param_group_id": torch.as_tensor(param_id, dtype=torch.long),
+            "parent_sequence_id": torch.as_tensor(seq_id, dtype=torch.long),
+            "window_start_cycle": torch.as_tensor(0, dtype=torch.long),
+            "window_hop_cycles": torch.as_tensor(self.patch_num_cycles, dtype=torch.long),
+            "short_num_cycles": torch.as_tensor(self.patch_num_cycles, dtype=torch.long),
+            "long_sequence_num_cycles": torch.as_tensor(
+                self.sequence_num_cycles,
+                dtype=torch.long,
+            ),
+            "train_ratio_x10000": torch.as_tensor(-1, dtype=torch.long),
+            "val_ratio_x10000": torch.as_tensor(-1, dtype=torch.long),
+            "is_windowed": torch.as_tensor(1, dtype=torch.long),
+            "is_iid_sequence": torch.as_tensor(0, dtype=torch.long),
+        }
 
 
 class BTTSequenceDataset(Dataset):

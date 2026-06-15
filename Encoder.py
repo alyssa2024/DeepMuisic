@@ -297,3 +297,271 @@ class VariationalIndependentTimeSeriesTransformer(torch.nn.Module):
     def forward(self, x, probe_ids=None, Cws=None):
         h = self.encode_features(x, probe_ids=probe_ids, Cws=Cws)
         return self.posterior_from_global_feature(h)
+
+
+class SequentialDSAEEncoder(torch.nn.Module):
+    """
+    DSAE-style sequential posterior for BTT patches.
+
+    No mean/max/attention/window pooling is used. Local patch features and the
+    patch sequence are summarized by BiGRU endpoint states, matching the DSAE
+    forward-last/backward-first pattern.
+    """
+
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        local_hidden_dim=128,
+        local_out_dim=128,
+        context_hidden_dim=256,
+        context_layers=1,
+        innovation_hidden_dim=256,
+        dropout=0.0,
+        freq_lower_hz=None,
+        freq_upper_hz=None,
+        min_log_rho2=-12.0,
+        max_log_rho2=-4.0,
+        c_init_logvar=-4.0,
+        z1_init_logvar=0.0,
+        delta_init_logvar=-6.0,
+    ):
+        super().__init__()
+        self.output_dim = int(output_dim)
+        self.num_harmonics = int(output_dim)
+        self.input_dim = int(input_dim)
+        self.local_hidden_dim = int(local_hidden_dim)
+        self.local_out_dim = int(local_out_dim)
+        self.context_hidden_dim = int(context_hidden_dim)
+
+        self.point_proj = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, local_hidden_dim),
+            torch.nn.SiLU(),
+            torch.nn.Linear(local_hidden_dim, local_hidden_dim),
+            torch.nn.SiLU(),
+        )
+        self.local_rnn = torch.nn.GRU(
+            input_size=local_hidden_dim,
+            hidden_size=local_hidden_dim,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+        )
+        self.local_endpoint_proj = torch.nn.Sequential(
+            torch.nn.Linear(2 * local_hidden_dim, local_out_dim),
+            torch.nn.SiLU(),
+        )
+
+        self.context_rnn = torch.nn.GRU(
+            input_size=local_out_dim,
+            hidden_size=context_hidden_dim,
+            num_layers=int(context_layers),
+            dropout=float(dropout) if int(context_layers) > 1 else 0.0,
+            batch_first=True,
+            bidirectional=True,
+        )
+        self.feature_dim = 2 * context_hidden_dim
+
+        self.f_mu_head = torch.nn.Linear(self.feature_dim, self.num_harmonics)
+        self.f_logrho2_head = torch.nn.Linear(self.feature_dim, self.num_harmonics)
+        self.logamp_mu_head = torch.nn.Linear(self.feature_dim, self.num_harmonics)
+        self.logamp_logvar_head = torch.nn.Linear(self.feature_dim, self.num_harmonics)
+        self.z1_head = torch.nn.Linear(
+            self.feature_dim + self.num_harmonics,
+            2 * self.num_harmonics,
+        )
+
+        delta_input_dim = self.feature_dim + 2 * self.num_harmonics + 1
+        self.delta_rnn = torch.nn.GRUCell(delta_input_dim, innovation_hidden_dim)
+        self.delta_head = torch.nn.Linear(
+            innovation_hidden_dim,
+            2 * self.num_harmonics,
+        )
+
+        torch.nn.init.zeros_(self.f_mu_head.weight)
+        torch.nn.init.zeros_(self.f_mu_head.bias)
+        torch.nn.init.zeros_(self.f_logrho2_head.weight)
+        torch.nn.init.zeros_(self.f_logrho2_head.bias)
+        torch.nn.init.zeros_(self.logamp_mu_head.weight)
+        torch.nn.init.zeros_(self.logamp_mu_head.bias)        # log-amp≈0 => amp≈1
+        torch.nn.init.zeros_(self.logamp_logvar_head.weight)
+        torch.nn.init.constant_(self.logamp_logvar_head.bias, float(c_init_logvar))
+        torch.nn.init.zeros_(self.z1_head.weight)
+        torch.nn.init.constant_(self.z1_head.bias[: self.num_harmonics], 0.0)
+        torch.nn.init.constant_(self.z1_head.bias[self.num_harmonics :], float(z1_init_logvar))
+        torch.nn.init.zeros_(self.delta_head.weight)
+        torch.nn.init.constant_(self.delta_head.bias[: self.num_harmonics], 0.0)
+        torch.nn.init.constant_(self.delta_head.bias[self.num_harmonics :], float(delta_init_logvar))
+
+        if freq_lower_hz is None:
+            freq_lower_hz = np.asarray([167.0, 341.0, 635.0, 872.0]) * 0.95
+        if freq_upper_hz is None:
+            freq_upper_hz = np.asarray([167.0, 341.0, 635.0, 872.0]) * 1.05
+        if len(freq_lower_hz) != self.num_harmonics:
+            raise ValueError("len(freq_lower_hz) must equal output_dim")
+        if len(freq_upper_hz) != self.num_harmonics:
+            raise ValueError("len(freq_upper_hz) must equal output_dim")
+        freq_lower = torch.tensor(freq_lower_hz, dtype=torch.float32)
+        freq_upper = torch.tensor(freq_upper_hz, dtype=torch.float32)
+        if torch.any(freq_lower <= 0):
+            raise ValueError("frequency lower bounds must be positive")
+        if torch.any(freq_upper <= freq_lower):
+            raise ValueError("frequency upper bounds must exceed lower bounds")
+
+        self.register_buffer("freq_lower", freq_lower)
+        self.register_buffer("freq_upper", freq_upper)
+        self.register_buffer("freq_mid", 0.5 * (freq_lower + freq_upper))
+        self.register_buffer("freq_half", 0.5 * (freq_upper - freq_lower))
+        self.register_buffer("f_center", 0.5 * (freq_lower + freq_upper))
+        self.register_buffer("f_band", 0.5 * (freq_upper - freq_lower))
+        self.min_log_rho2 = float(min_log_rho2)
+        self.max_log_rho2 = float(max_log_rho2)
+
+    @staticmethod
+    def reparameterize(mu, logvar, sample=True):
+        if not sample:
+            return mu
+        return mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)
+
+    def sample_truncated_frequency(self, mu_f, std_f, sample=True, eps=1e-6):
+        """
+        Inverse-CDF reparameterized sampling from the strict band-truncated
+        Gaussian q(f|Y). This keeps f inside [freq_lower, freq_upper].
+        """
+        if not sample:
+            return mu_f
+        std_f = std_f.clamp_min(eps)
+        lower = self.freq_lower.to(device=mu_f.device, dtype=mu_f.dtype).view(1, -1)
+        upper = self.freq_upper.to(device=mu_f.device, dtype=mu_f.dtype).view(1, -1)
+        alpha = (lower - mu_f) / std_f
+        beta = (upper - mu_f) / std_f
+        cdf_alpha = 0.5 * (1.0 + torch.erf(alpha / math.sqrt(2.0)))
+        cdf_beta = 0.5 * (1.0 + torch.erf(beta / math.sqrt(2.0)))
+        mass = (cdf_beta - cdf_alpha).clamp_min(eps)
+        u = torch.rand_like(mu_f)
+        target_cdf = (cdf_alpha + u * mass).clamp(eps, 1.0 - eps)
+        normal = torch.distributions.Normal(
+            torch.zeros_like(target_cdf),
+            torch.ones_like(target_cdf),
+        )
+        z = normal.icdf(target_cdf)
+        f_sample = mu_f + std_f * z
+        return torch.minimum(torch.maximum(f_sample, lower), upper)
+
+    def encode_local(self, features):
+        if features.ndim != 4:
+            raise ValueError(
+                f"features must have shape [N, B, P, d_in], got {features.shape}"
+            )
+        batch_size, num_steps, points_per_step, input_dim = features.shape
+        if input_dim != self.input_dim:
+            raise ValueError(f"Expected input_dim={self.input_dim}, got {input_dim}")
+
+        flat = features.reshape(batch_size * num_steps, points_per_step, input_dim)
+        point_features = self.point_proj(flat)
+        local_seq, _ = self.local_rnn(point_features)
+        h_forward_last = local_seq[:, -1, : self.local_hidden_dim]
+        h_backward_first = local_seq[:, 0, self.local_hidden_dim :]
+        endpoints = torch.cat([h_forward_last, h_backward_first], dim=-1)
+        local = self.local_endpoint_proj(endpoints)
+        return local.reshape(batch_size, num_steps, self.local_out_dim)
+
+    def encode_context(self, e_seq):
+        h_bar, _ = self.context_rnn(e_seq)
+        h_forward_last = h_bar[:, -1, : self.context_hidden_dim]
+        h_backward_first = h_bar[:, 0, self.context_hidden_dim :]
+        h_global = torch.cat([h_forward_last, h_backward_first], dim=-1)
+        return h_bar, h_global
+
+    def frequency_posterior(self, h_global):
+        raw_mu = self.f_mu_head(h_global)
+        raw_logrho2 = self.f_logrho2_head(h_global)
+        mu_f = self.freq_mid + self.freq_half * torch.tanh(raw_mu)
+        log_rho2 = self.min_log_rho2 + (
+            self.max_log_rho2 - self.min_log_rho2
+        ) * torch.sigmoid(raw_logrho2)
+        std_f = self.freq_half * torch.exp(0.5 * log_rho2)
+        logvar_f = 2.0 * torch.log(std_f + 1e-12)
+        return mu_f, logvar_f, std_f, log_rho2
+
+    def forward(self, features, delta_s, sample=True, tau=None, probe_ids=None):
+        del tau, probe_ids
+        if delta_s.ndim != 2:
+            raise ValueError(f"delta_s must have shape [N, B], got {delta_s.shape}")
+
+        e_seq = self.encode_local(features)
+        h_bar, h_global = self.encode_context(e_seq)
+        batch_size, num_steps, _ = h_bar.shape
+        if delta_s.shape != (batch_size, num_steps):
+            raise ValueError(
+                f"delta_s shape {delta_s.shape} must match [N, B]={h_bar.shape[:2]}"
+            )
+
+        mu_f, logvar_f, std_f, log_rho2 = self.frequency_posterior(h_global)
+        f_sample = self.sample_truncated_frequency(mu_f, std_f, sample=sample)
+
+        logamp_mu = self.logamp_mu_head(h_global)
+        logamp_logvar = self.logamp_logvar_head(h_global).clamp(min=-20.0, max=10.0)
+        logamp_sample = self.reparameterize(logamp_mu, logamp_logvar, sample=sample)
+        amp_sample = torch.exp(logamp_sample)   # [N, K] 实正
+        amp_mu = torch.exp(logamp_mu)           # 解码用点估计（中位数）
+
+        z1_params = self.z1_head(torch.cat([h_global, f_sample], dim=-1))
+        z1_mu = z1_params[:, : self.num_harmonics]
+        z1_logvar = z1_params[:, self.num_harmonics :].clamp(min=-20.0, max=10.0)
+        z_prev = self.reparameterize(z1_mu, z1_logvar, sample=sample)
+
+        z_seq = [z_prev]
+        delta_mus = []
+        delta_logvars = []
+        delta_samples = []
+        r = torch.zeros(
+            batch_size,
+            self.delta_rnn.hidden_size,
+            device=features.device,
+            dtype=features.dtype,
+        )
+        for step in range(1, num_steps):
+            ds = delta_s[:, step : step + 1].to(device=features.device, dtype=features.dtype)
+            delta_input = torch.cat([h_bar[:, step], f_sample, z_prev, ds], dim=-1)
+            r = self.delta_rnn(delta_input, r)
+            delta_params = self.delta_head(r)
+            delta_mu = delta_params[:, : self.num_harmonics]
+            delta_logvar = delta_params[:, self.num_harmonics :].clamp(min=-20.0, max=10.0)
+            delta_z = self.reparameterize(delta_mu, delta_logvar, sample=sample)
+            z_prev = z_prev + 2.0 * math.pi * f_sample * ds + delta_z
+            z_seq.append(z_prev)
+            delta_mus.append(delta_mu)
+            delta_logvars.append(delta_logvar)
+            delta_samples.append(delta_z)
+
+        if delta_mus:
+            delta_mu = torch.stack(delta_mus, dim=1)
+            delta_logvar = torch.stack(delta_logvars, dim=1)
+            delta_sample = torch.stack(delta_samples, dim=1)
+        else:
+            empty = features.new_zeros(batch_size, 0, self.num_harmonics)
+            delta_mu = empty
+            delta_logvar = empty
+            delta_sample = empty
+
+        return {
+            "h_bar": h_bar,
+            "h_global": h_global,
+            "mu_f": mu_f,
+            "logvar_f": logvar_f,
+            "std_f": std_f,
+            "log_rho2_f": log_rho2,
+            "f_sample": f_sample,
+            "logamp_mu": logamp_mu,
+            "logamp_logvar": logamp_logvar,
+            "amp_sample": amp_sample,
+            "amp_mu": amp_mu,
+            "z1_mu": z1_mu,
+            "z1_logvar": z1_logvar,
+            "z1_sample": z_seq[0],
+            "delta_mu": delta_mu,
+            "delta_logvar": delta_logvar,
+            "delta_sample": delta_sample,
+            "z_seq": torch.stack(z_seq, dim=1),
+        }

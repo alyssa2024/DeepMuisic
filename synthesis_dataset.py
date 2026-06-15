@@ -172,6 +172,30 @@ def sample_amplitude_uniform(
     return amp_real, amp_imag
 
 
+def sample_amplitude_uniform_polar(
+    num_harmonics,
+    magnitude_min,
+    magnitude_max,
+    phase_min,
+    phase_max,
+    rng,
+):
+    """
+    Sample complex amplitudes with uniform magnitude and uniform phase.
+
+    magnitude ~ U(magnitude_min, magnitude_max)
+    phase     ~ U(phase_min, phase_max)
+
+    Returns real/imag parts so downstream code stays unchanged.
+    """
+    num_harmonics = int(num_harmonics)
+    magnitude = rng.uniform(magnitude_min, magnitude_max, size=num_harmonics)
+    phase = rng.uniform(phase_min, phase_max, size=num_harmonics)
+    amp_real = magnitude * np.cos(phase)
+    amp_imag = magnitude * np.sin(phase)
+    return amp_real, amp_imag
+
+
 def generate_one_btt_sequence(
     num_cycles,
     base_freq,
