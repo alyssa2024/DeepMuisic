@@ -504,3 +504,66 @@ class PhysicalHarmonicVAE(nn.Module):
             "amp_logvar_nn": amp_logvar_nn,
             "amp_var_nn": amp_var_nn,
         }
+
+
+class SequentialPhysicalHarmonicVAE(nn.Module):
+    """
+    Sequential-DSAE BTT VAE with a fixed physics decoder.
+
+    The encoder produces global latents f,c and a phase-state sequence z_seq.
+    The decoder is not learned:
+        y_hat[b,p] = sum_k c_k exp(j * (z[k,b] + 2*pi*f_k*tau[b,p]))
+    """
+
+    def __init__(self, encoder: nn.Module):
+        super().__init__()
+        self.encoder = encoder
+        self.num_harmonics = int(encoder.output_dim)
+
+    def decode_sequence(self, f, amp, z_seq, tau):
+        if f.ndim != 2:
+            raise ValueError(f"f must have shape [N, K], got {f.shape}")
+        if z_seq.ndim != 3:
+            raise ValueError(f"z_seq must have shape [N, B, K], got {z_seq.shape}")
+        if tau.ndim != 3:
+            raise ValueError(f"tau must have shape [N, B, P], got {tau.shape}")
+        if f.shape[0] != z_seq.shape[0] or f.shape[1] != z_seq.shape[2]:
+            raise ValueError(f"f shape {f.shape} is incompatible with z_seq {z_seq.shape}")
+        if tau.shape[:2] != z_seq.shape[:2]:
+            raise ValueError(f"tau shape {tau.shape} is incompatible with z_seq {z_seq.shape}")
+        if torch.is_complex(amp):
+            raise TypeError(f"amp must be real, got {amp.dtype}")
+        if amp.shape != f.shape:
+            raise ValueError(f"amp shape {amp.shape} must match f shape {f.shape}")
+
+        z64 = z_seq.to(torch.float64).unsqueeze(2)
+        f64 = f.to(torch.float64).view(f.shape[0], 1, 1, f.shape[1])
+        tau64 = tau.to(torch.float64).unsqueeze(-1)
+        phase64 = z64 + 2.0 * math.pi * f64 * tau64
+        phase64 = torch.remainder(phase64, 2.0 * math.pi)
+        phi = torch.polar(torch.ones_like(phase64), phase64).to(torch.complex64)
+        amp_view = amp.to(torch.float32).view(amp.shape[0], 1, 1, amp.shape[1])
+        return (phi * amp_view).sum(dim=-1)   # 实幅 × 复相量 = 复 y_hat
+
+    def forward(self, batch, sample=True):
+        features = batch["features"]
+        tau = batch["tau"]
+        delta_s = batch["delta_s"]
+        enc = self.encoder(
+            features=features,
+            tau=tau,
+            delta_s=delta_s,
+            probe_ids=batch.get("probe_ids"),
+            sample=sample,
+        )
+        f = enc["f_sample"] if sample else enc["mu_f"]
+        amp = enc["amp_sample"] if sample else enc["amp_mu"]
+        y_hat = self.decode_sequence(
+            f=f,
+            amp=amp,
+            z_seq=enc["z_seq"],
+            tau=tau,
+        )
+        outputs = dict(enc)
+        outputs["y_hat"] = y_hat
+        return outputs
