@@ -82,6 +82,9 @@ def main():
     ap.add_argument("--num_cycles", type=int, default=16)
     ap.add_argument("--steps", type=int, default=8)
     ap.add_argument("--profile_ridge", type=float, default=1e-3)
+    ap.add_argument("--snr_db", type=float, default=20.0,
+                    help="oracle selection(绕开 encoder)下扫 SNR,分离「SNR 固有难度(CRB)」"
+                         "vs「encoder OOD」。对比 btt_full_pipeline 的 encoder 路同 SNR 结果。")
     ap.add_argument("--seed", type=int, default=0)
     cli = ap.parse_args()
 
@@ -92,7 +95,7 @@ def main():
         "--candidate_support_mode", "basin", "--candidate_mode", "profile_ls",
         "--basin_min_half_width_hz", "8.0", "--global_bins", "512", "--top_j", "24",
         "--num_cycles", str(cli.num_cycles), "--train_samples", str(cli.num_samples),
-        "--profile_ridge", str(cli.profile_ridge),
+        "--profile_ridge", str(cli.profile_ridge), "--snr_db", str(cli.snr_db),
         "--recon_mode", "point_ls" if cli.mode == "profile_map" else "marginal",
     ])
     ds = runmod.LegacyFourComponentCandidateDataset("train", cli.num_samples, cli.seed, args)

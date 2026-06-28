@@ -114,6 +114,44 @@ plan_final §13.2 假设「条件交替 + Π⊥ 投影」比联合更新鲁棒(�
 GN 捕获域(B1)实测 ±1.5Hz 全稳、±2.0 仍 96%,FR 初值误差(max 1.84)全在域内。
 原计划的「sub-bin 插值兜尾部」**基本不必要**,仅对极少数 >1.8Hz 样本有保险价值。
 
+### §14 三路 SNR 扫描(K=4 同中心,encoder 不 OOD)—— `btt_full_pipeline.py --snr_db`
+低 SNR 才让 physics/encoder/hybrid 三路分化(精修后 freq MAE):
+
+| SNR | physics | encoder | hybrid | raw_sel(未精修) |
+|---|---|---|---|---|
+| 20 dB | 0.087 | 0.087 | 0.087 | 0.526 |
+| 10 dB | 0.278 | 0.278 | 0.278 | 0.589 |
+| 5 dB | 0.500 | 0.500 | 0.500 | 0.768 |
+| **0 dB** | **12.79** | **2.51** | **2.51** | 2.25 |
+
+**结论:**
+1. **20–5dB 三路一致**:SNR 够时 FR 峰高选 = q(z) 选,physics-only 够用。
+2. **0dB:physics 崩(12.8),encoder 稳(2.51,好 5×)**——**encoder/q(z) 价值的硬证据**:
+   低 SNR 下 FR 峰被噪声污染,q(z) 聚合全局观测证据选 basin 更抗噪(= DeepMUSIC "encoder
+   聚合全局证据" 思想)。
+3. **0dB encoder≈raw_sel**:选错 basin 时精修救不回 → **瓶颈从精修转移到 selection**。
+4. **价值互补**:physics 高SNR够用;encoder 价值在低SNR(抗噪选洞);精修价值在中高SNR(洞选对后)。
+
+### oracle vs encoder SNR 对比(分离「SNR 固有难度」vs「encoder OOD」)—— `btt_oracle_continuous_refinement.py --snr_db`
+⚠️ **关键修正**:前置 q(z) encoder 是【生产条件 20dB 单工况】训的。用 oracle selection
+(绕开 encoder)重测,分离两种难度:
+
+| SNR | oracle+精修(固有下界) | encoder+精修(§14) | 差距来源 |
+|---|---|---|---|
+| 20 dB | 0.084 | 0.087 | ≈0,encoder 够用 |
+| 10 dB | 0.268 | 0.278 | ≈0 |
+| 5 dB | 0.484 | 0.500 | ≈0 |
+| **0 dB** | **0.941** | **2.51** | **encoder OOD 拖累 2.7×** |
+
+**结论:**
+1. **5dB 以上:oracle≈encoder**——basin 选择是粗粒度任务,对 SNR 不敏感,生产 encoder
+   够用,**此区间精修是瓶颈**(随 SNR 降变差 = CRB,非 encoder 问题)。
+2. **0dB:oracle 0.94 vs encoder 2.51**——**坐实"encoder 工况不泛化"**:0dB 固有下界 0.94,
+   encoder 只到 2.51,多出的 1.6 是 20dB-训-encoder 在 0dB **选错 basin** 造成。
+3. → **极低 SNR 下 encoder 泛化是真问题**(需多工况重训,plan_final §3 的"多参数覆盖"要求);
+   但精修层(任务二核心增量)是 **selection-free** 的,oracle 下结论不受污染,稳。
+4. **下一阶段**:多工况重训 q(z) encoder(SNR/freq-band/K/speed 覆盖),才能诚实测全工况。
+
 ### 弱分量(强+弱,oracle K=2,spacing 40Hz)—— `experiments/btt_weak_component.py`
 此前所有测试都是等幅;补测强+弱后:
 

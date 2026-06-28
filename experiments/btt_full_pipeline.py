@@ -64,6 +64,9 @@ def main():
     ap.add_argument("--steps", type=int, default=8)
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--mode", choices=["marginal", "profile_map"], default="marginal")
+    ap.add_argument("--snr_db", type=float, default=20.0,
+                    help="降 SNR 是难场景:K=4 同频率中心(encoder 不 OOD),只增噪声。"
+                         "看 physics-only(FR峰高选)何时崩 vs encoder/hybrid 是否更稳。")
     ap.add_argument("--seed", type=int, default=0)
     cli = ap.parse_args()
 
@@ -80,6 +83,7 @@ def main():
         "--candidate_support_mode", "basin", "--candidate_mode", "profile_ls",
         "--basin_min_half_width_hz", "8.0", "--global_bins", "512", "--top_j", "24",
         "--num_cycles", str(cli.num_cycles), "--train_samples", str(cli.num_samples),
+        "--snr_db", str(cli.snr_db),
         "--include_local_time", "--profile_ridge", "1e-3", "--recon_mode", recon])
     ds = runmod.LegacyFourComponentCandidateDataset("train", cli.num_samples, cli.seed, args)
     K = ds.num_components
