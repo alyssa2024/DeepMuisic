@@ -1,0 +1,7 @@
+# 模型权重不进 git (太大: 单个 resfreq 55MB, 四组共 171MB)。
+# 权重保存在远端 /root/autodl-tmp/unified_project 与本地 artifacts 目录。
+*.pt
+
+# python 缓存
+__pycache__/
+*.pyc

@@ -1,0 +1,124 @@
+{
+  "seed": 0,
+  "data": {
+    "n_rev": 16,
+    "n_probes": 5,
+    "probe_layout": "paper5",
+    "probe_angles_deg": null,
+    "f_rot_hz": 100.0,
+    "regime": "probe",
+    "speed_fluct": 0.0
+  },
+  "signal": {
+    "num_components": 8,
+    "variable_num_freq": false,
+    "min_sep_hz": 6.0,
+    "f_lo": 50.0,
+    "f_hi": 450.0,
+    "distance": "uniform",
+    "amplitude": "normal_floor",
+    "floor_amplitude": 0.1
+  },
+  "covariance": {
+    "block_revs": 2,
+    "num_snapshots": 13,
+    "channels": [
+      "real",
+      "imag",
+      "angle"
+    ]
+  },
+  "frequency": {
+    "grid_step_hz": 2.0,
+    "f_min": 50.0,
+    "f_max": 450.0,
+    "target_sigma_hz": 1.0
+  },
+  "encoder": {
+    "train": [
+      "regression_cnn",
+      "classification_cnn",
+      "resfreq",
+      "rope"
+    ],
+    "type": "resfreq",
+    "cnn": {
+      "n_filters": 64,
+      "n_layers": 20,
+      "inner_dim": 125,
+      "kernel_size": 3,
+      "upsampling": 8,
+      "kernel_out": 25
+    },
+    "rope": {
+      "d_model": 256,
+      "n_heads": 8,
+      "n_layers": 4,
+      "ffn_dim": 512,
+      "base": 10000.0,
+      "t_scale": null,
+      "n_filters": 64,
+      "inner_dim": 125,
+      "upsampling": 8,
+      "kernel_out": 25
+    },
+    "resfreq": {
+      "upsample_channels": 8,
+      "stage_channels": [
+        64,
+        128,
+        256,
+        512
+      ],
+      "residual_blocks_per_stage": 2
+    }
+  },
+  "loss": {
+    "bce_pos_weight": null
+  },
+  "training": {
+    "iters": 30000,
+    "batch_size": 256,
+    "lr": 0.0003,
+    "grad_clip": 1.0,
+    "device": "cuda",
+    "num_workers": 12,
+    "train_snr_choices": [
+      0.0,
+      2.5,
+      5.0,
+      7.5
+    ],
+    "cache": {
+      "enabled": false,
+      "cache_size": 50000
+    }
+  },
+  "eval": {
+    "eval_every": 2000,
+    "eval_batches": 8,
+    "monitor_snr_db": 20.0,
+    "monitor_recall_L": 5,
+    "eval_snr_db": [
+      -5.0,
+      0.0,
+      5.0,
+      10.0,
+      20.0,
+      30.0
+    ],
+    "basin_hz": 2.0,
+    "recall_L": [
+      1,
+      3,
+      5,
+      10
+    ],
+    "nms_distance_hz": 2.7,
+    "success_tol_hz": 1.0
+  },
+  "checkpoint": {
+    "dir": "unified_project/artifacts",
+    "save_every": 2000
+  }
+}

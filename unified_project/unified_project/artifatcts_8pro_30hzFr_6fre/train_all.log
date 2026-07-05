@@ -1,0 +1,331 @@
+[plan] 本次训练编码器: ['regression_cnn', 'classification_cnn', 'resfreq', 'rope']
+
+========== 训练 regression_cnn ==========
+[cfg] encoder=regression_cnn G=201 signal_dim=128 regression=True device=cuda
+[model] params=2.30M fr_size=1000
+[it      1] train_loss=1.2097 val_loss=0.0192 R8@20dB=0.079
+[it   2000] train_loss=0.0181 val_loss=0.0181 R8@20dB=0.078
+[it   4000] train_loss=0.0181 val_loss=0.0181 R8@20dB=0.080
+[it   6000] train_loss=0.0181 val_loss=0.0181 R8@20dB=0.076
+[it   8000] train_loss=0.0181 val_loss=0.0181 R8@20dB=0.077
+[it  10000] train_loss=0.0179 val_loss=0.0179 R8@20dB=0.135
+[it  12000] train_loss=0.0093 val_loss=0.0068 R8@20dB=0.807
+[it  14000] train_loss=0.0082 val_loss=0.0056 R8@20dB=0.849
+[it  16000] train_loss=0.0076 val_loss=0.0051 R8@20dB=0.865
+[it  18000] train_loss=0.0078 val_loss=0.0049 R8@20dB=0.870
+[it  20000] train_loss=0.0073 val_loss=0.0046 R8@20dB=0.879
+[it  22000] train_loss=0.0071 val_loss=0.0043 R8@20dB=0.887
+[it  24000] train_loss=0.0072 val_loss=0.0043 R8@20dB=0.888
+[it  26000] train_loss=0.0070 val_loss=0.0042 R8@20dB=0.895
+[it  28000] train_loss=0.0071 val_loss=0.0043 R8@20dB=0.893
+[it  30000] train_loss=0.0072 val_loss=0.0040 R8@20dB=0.899
+[regression_cnn] 训练完成, 跑全 SNR 分档评估...
+{
+  "encoder": "regression_cnn",
+  "output_dir": "unified_project/artifacts/regression_cnn",
+  "final_per_snr": {
+    "-5.0": {
+      "recall@8": 0.4803059920668602,
+      "recall@10": 0.5153808519244194,
+      "recall@12": 0.5454915389418602,
+      "peak_density": 49.51513671875,
+      "freq_mae_hz": 18.22756004333496,
+      "success_rate": 0.4228515625,
+      "val_loss": 0.01408211828675121
+    },
+    "0.0": {
+      "recall@8": 0.6805826798081398,
+      "recall@10": 0.7150065079331398,
+      "recall@12": 0.7381184920668602,
+      "peak_density": 49.83984375,
+      "freq_mae_hz": 12.25224781036377,
+      "success_rate": 0.6253255208333334,
+      "val_loss": 0.009396733599714935
+    },
+    "5.0": {
+      "recall@8": 0.8146158829331398,
+      "recall@10": 0.8386230394244194,
+      "recall@12": 0.8557128831744194,
+      "peak_density": 50.63525390625,
+      "freq_mae_hz": 7.848016262054443,
+      "success_rate": 0.7616373697916666,
+      "val_loss": 0.006225401361007243
+    },
+    "10.0": {
+      "recall@8": 0.8764648362994194,
+      "recall@10": 0.8983561173081398,
+      "recall@12": 0.9095052108168602,
+      "peak_density": 52.3466796875,
+      "freq_mae_hz": 5.729063510894775,
+      "success_rate": 0.829833984375,
+      "val_loss": 0.004610380798112601
+    },
+    "20.0": {
+      "recall@8": 0.8990885466337204,
+      "recall@10": 0.9165852814912796,
+      "recall@12": 0.9261067733168602,
+      "peak_density": 53.7607421875,
+      "freq_mae_hz": 5.148916244506836,
+      "success_rate": 0.8544108072916666,
+      "val_loss": 0.004035256104543805
+    },
+    "30.0": {
+      "recall@8": 0.8981933519244194,
+      "recall@10": 0.9164225235581398,
+      "recall@12": 0.9279785081744194,
+      "peak_density": 53.80126953125,
+      "freq_mae_hz": 5.05681848526001,
+      "success_rate": 0.8561197916666666,
+      "val_loss": 0.0039941548893693835
+    }
+  }
+}
+
+========== 训练 classification_cnn ==========
+[cfg] encoder=classification_cnn G=201 signal_dim=128 regression=False device=cuda
+[model] params=2.32M fr_size=None
+[it      1] train_loss=0.7019 val_loss=0.6956 R8@20dB=0.077
+[it   2000] train_loss=0.1343 val_loss=0.1343 R8@20dB=0.081
+[it   4000] train_loss=0.1006 val_loss=0.0958 R8@20dB=0.529
+[it   6000] train_loss=0.0866 val_loss=0.0752 R8@20dB=0.673
+[it   8000] train_loss=0.0799 val_loss=0.0652 R8@20dB=0.737
+[it  10000] train_loss=0.0727 val_loss=0.0588 R8@20dB=0.769
+[it  12000] train_loss=0.0717 val_loss=0.0546 R8@20dB=0.792
+[it  14000] train_loss=0.0695 val_loss=0.0517 R8@20dB=0.810
+[it  16000] train_loss=0.0667 val_loss=0.0500 R8@20dB=0.821
+[it  18000] train_loss=0.0691 val_loss=0.0483 R8@20dB=0.824
+[it  20000] train_loss=0.0666 val_loss=0.0472 R8@20dB=0.830
+[it  22000] train_loss=0.0648 val_loss=0.0463 R8@20dB=0.835
+[it  24000] train_loss=0.0665 val_loss=0.0450 R8@20dB=0.841
+[it  26000] train_loss=0.0650 val_loss=0.0447 R8@20dB=0.846
+[it  28000] train_loss=0.0657 val_loss=0.0438 R8@20dB=0.848
+[it  30000] train_loss=0.0667 val_loss=0.0435 R8@20dB=0.848
+[classification_cnn] 训练完成, 跑全 SNR 分档评估...
+{
+  "encoder": "classification_cnn",
+  "output_dir": "unified_project/artifacts/classification_cnn",
+  "final_per_snr": {
+    "-5.0": {
+      "recall@8": 0.4635416679084301,
+      "recall@10": 0.5039876252412796,
+      "recall@12": 0.5362141951918602,
+      "peak_density": 60.39404296875,
+      "freq_mae_hz": 20.918413162231445,
+      "success_rate": 0.3651529947916667,
+      "val_loss": 0.10806585010141134
+    },
+    "0.0": {
+      "recall@8": 0.6493326798081398,
+      "recall@10": 0.6853841245174408,
+      "recall@12": 0.7130533903837204,
+      "peak_density": 60.5205078125,
+      "freq_mae_hz": 14.982868194580078,
+      "success_rate": 0.5506998697916666,
+      "val_loss": 0.07851030118763447
+    },
+    "5.0": {
+      "recall@8": 0.7721354216337204,
+      "recall@10": 0.8046061247587204,
+      "recall@12": 0.826171875,
+      "peak_density": 60.708984375,
+      "freq_mae_hz": 10.398818969726562,
+      "success_rate": 0.6773274739583334,
+      "val_loss": 0.058264121413230896
+    },
+    "10.0": {
+      "recall@8": 0.8318684846162796,
+      "recall@10": 0.859619140625,
+      "recall@12": 0.8763020783662796,
+      "peak_density": 60.6689453125,
+      "freq_mae_hz": 8.31502628326416,
+      "success_rate": 0.7412923177083334,
+      "val_loss": 0.04742749594151974
+    },
+    "20.0": {
+      "recall@8": 0.8478190079331398,
+      "recall@10": 0.8746744766831398,
+      "recall@12": 0.8902994766831398,
+      "peak_density": 60.36669921875,
+      "freq_mae_hz": 7.5391082763671875,
+      "success_rate": 0.766357421875,
+      "val_loss": 0.04349901806563139
+    },
+    "30.0": {
+      "recall@8": 0.849934883415699,
+      "recall@10": 0.8751627579331398,
+      "recall@12": 0.8925781175494194,
+      "peak_density": 60.32421875,
+      "freq_mae_hz": 7.570613861083984,
+      "success_rate": 0.768798828125,
+      "val_loss": 0.043217388447374105
+    }
+  }
+}
+
+========== 训练 resfreq ==========
+[cfg] encoder=resfreq G=201 signal_dim=128 regression=False device=cuda
+[model] params=14.24M fr_size=None
+[it      1] train_loss=0.7724 val_loss=0.6898 R8@20dB=0.077
+[it   2000] train_loss=0.0989 val_loss=0.0924 R8@20dB=0.597
+[it   4000] train_loss=0.0947 val_loss=0.0857 R8@20dB=0.636
+[it   6000] train_loss=0.0934 val_loss=0.0815 R8@20dB=0.661
+[it   8000] train_loss=0.0927 val_loss=0.0792 R8@20dB=0.675
+[it  10000] train_loss=0.0908 val_loss=0.0769 R8@20dB=0.693
+[it  12000] train_loss=0.0913 val_loss=0.0761 R8@20dB=0.698
+[it  14000] train_loss=0.0892 val_loss=0.0752 R8@20dB=0.700
+[it  16000] train_loss=0.0882 val_loss=0.0737 R8@20dB=0.708
+[it  18000] train_loss=0.0901 val_loss=0.0731 R8@20dB=0.709
+[it  20000] train_loss=0.0878 val_loss=0.0718 R8@20dB=0.718
+[it  22000] train_loss=0.0880 val_loss=0.0713 R8@20dB=0.721
+[it  24000] train_loss=0.0873 val_loss=0.0705 R8@20dB=0.727
+[it  26000] train_loss=0.0866 val_loss=0.0706 R8@20dB=0.726
+[it  28000] train_loss=0.0887 val_loss=0.0704 R8@20dB=0.730
+[it  30000] train_loss=0.0896 val_loss=0.0698 R8@20dB=0.731
+[resfreq] 训练完成, 跑全 SNR 分档评估...
+{
+  "encoder": "resfreq",
+  "output_dir": "unified_project/artifacts/resfreq",
+  "final_per_snr": {
+    "-5.0": {
+      "recall@8": 0.3443196602165699,
+      "recall@10": 0.3682454377412796,
+      "recall@12": 0.3871256522834301,
+      "peak_density": 44.27197265625,
+      "freq_mae_hz": 19.781471252441406,
+      "success_rate": 0.18489583333333334,
+      "val_loss": 0.11890613008290529
+    },
+    "0.0": {
+      "recall@8": 0.5191243439912796,
+      "recall@10": 0.5394693985581398,
+      "recall@12": 0.5570475235581398,
+      "peak_density": 47.869140625,
+      "freq_mae_hz": 13.829249382019043,
+      "success_rate": 0.3235677083333333,
+      "val_loss": 0.0996426660567522
+    },
+    "5.0": {
+      "recall@8": 0.642985038459301,
+      "recall@10": 0.6646321713924408,
+      "recall@12": 0.6784667894244194,
+      "peak_density": 50.6650390625,
+      "freq_mae_hz": 9.89699649810791,
+      "success_rate": 0.4427083333333333,
+      "val_loss": 0.08272891212254763
+    },
+    "10.0": {
+      "recall@8": 0.7039388120174408,
+      "recall@10": 0.72412109375,
+      "recall@12": 0.7361653596162796,
+      "peak_density": 51.82958984375,
+      "freq_mae_hz": 7.735525131225586,
+      "success_rate": 0.5048014322916666,
+      "val_loss": 0.07349901366978884
+    },
+    "20.0": {
+      "recall@8": 0.7313639298081398,
+      "recall@10": 0.750244140625,
+      "recall@12": 0.7639160230755806,
+      "peak_density": 52.2626953125,
+      "freq_mae_hz": 7.228839874267578,
+      "success_rate": 0.5302734375,
+      "val_loss": 0.06983472872525454
+    },
+    "30.0": {
+      "recall@8": 0.7312825545668602,
+      "recall@10": 0.751708984375,
+      "recall@12": 0.7642415389418602,
+      "peak_density": 52.30224609375,
+      "freq_mae_hz": 7.150917053222656,
+      "success_rate": 0.5314127604166666,
+      "val_loss": 0.06956913974136114
+    }
+  }
+}
+
+========== 训练 rope ==========
+[cfg] encoder=rope G=201 signal_dim=128 regression=True device=cuda
+[model] params=2.14M fr_size=1000
+[it      1] train_loss=0.4648 val_loss=0.3975 R8@20dB=0.082
+[it   2000] train_loss=0.0181 val_loss=0.0181 R8@20dB=0.077
+[it   4000] train_loss=0.0181 val_loss=0.0181 R8@20dB=0.080
+[it   6000] train_loss=0.0181 val_loss=0.0181 R8@20dB=0.083
+[it   8000] train_loss=0.0181 val_loss=0.0180 R8@20dB=0.128
+[it  10000] train_loss=0.0177 val_loss=0.0174 R8@20dB=0.307
+[it  12000] train_loss=0.0170 val_loss=0.0164 R8@20dB=0.456
+[it  14000] train_loss=0.0164 val_loss=0.0155 R8@20dB=0.526
+[it  16000] train_loss=0.0158 val_loss=0.0148 R8@20dB=0.555
+[it  18000] train_loss=0.0154 val_loss=0.0142 R8@20dB=0.582
+[it  20000] train_loss=0.0148 val_loss=0.0137 R8@20dB=0.604
+[it  22000] train_loss=0.0144 val_loss=0.0131 R8@20dB=0.618
+[it  24000] train_loss=0.0140 val_loss=0.0125 R8@20dB=0.640
+[it  26000] train_loss=0.0132 val_loss=0.0117 R8@20dB=0.668
+[it  28000] train_loss=0.0125 val_loss=0.0109 R8@20dB=0.687
+[it  30000] train_loss=0.0120 val_loss=0.0101 R8@20dB=0.712
+[rope] 训练完成, 跑全 SNR 分档评估...
+{
+  "encoder": "rope",
+  "output_dir": "unified_project/artifacts/rope",
+  "final_per_snr": {
+    "-5.0": {
+      "recall@8": 0.380859375,
+      "recall@10": 0.4153645820915699,
+      "recall@12": 0.4459635429084301,
+      "peak_density": 54.52197265625,
+      "freq_mae_hz": 23.18017578125,
+      "success_rate": 0.2931315104166667,
+      "val_loss": 0.016497925855219364
+    },
+    "0.0": {
+      "recall@8": 0.5552571564912796,
+      "recall@10": 0.5878906324505806,
+      "recall@12": 0.6133626326918602,
+      "peak_density": 55.0498046875,
+      "freq_mae_hz": 17.49396324157715,
+      "success_rate": 0.4711100260416667,
+      "val_loss": 0.013413772685453296
+    },
+    "5.0": {
+      "recall@8": 0.6599934846162796,
+      "recall@10": 0.691162109375,
+      "recall@12": 0.7135416641831398,
+      "peak_density": 55.55322265625,
+      "freq_mae_hz": 14.386448860168457,
+      "success_rate": 0.5819498697916666,
+      "val_loss": 0.01128590910229832
+    },
+    "10.0": {
+      "recall@8": 0.6971842423081398,
+      "recall@10": 0.7275390625,
+      "recall@12": 0.7518717423081398,
+      "peak_density": 55.783203125,
+      "freq_mae_hz": 13.37216854095459,
+      "success_rate": 0.6210123697916666,
+      "val_loss": 0.010426694992929697
+    },
+    "20.0": {
+      "recall@8": 0.7122395858168602,
+      "recall@10": 0.7432454377412796,
+      "recall@12": 0.765869140625,
+      "peak_density": 55.97705078125,
+      "freq_mae_hz": 12.923603057861328,
+      "success_rate": 0.6349283854166666,
+      "val_loss": 0.010066717281006277
+    },
+    "30.0": {
+      "recall@8": 0.7131347730755806,
+      "recall@10": 0.7435709685087204,
+      "recall@12": 0.7659505233168602,
+      "peak_density": 55.90478515625,
+      "freq_mae_hz": 12.765902519226074,
+      "success_rate": 0.635498046875,
+      "val_loss": 0.010031086974777281
+    }
+  }
+}
+
+========== 汇总 (final R@5) ==========
+        regression_cnn: -5dB=nan | 0dB=nan | 5dB=nan | 10dB=nan | 20dB=nan | 30dB=nan
+    classification_cnn: -5dB=nan | 0dB=nan | 5dB=nan | 10dB=nan | 20dB=nan | 30dB=nan
+               resfreq: -5dB=nan | 0dB=nan | 5dB=nan | 10dB=nan | 20dB=nan | 30dB=nan
+                  rope: -5dB=nan | 0dB=nan | 5dB=nan | 10dB=nan | 20dB=nan | 30dB=nan
