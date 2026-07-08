@@ -1,0 +1,63 @@
+% this is my first package
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{mathstuff}[2022/08/16 v0.01 LaTeX package for my own purpose]
+\RequirePackage{amssymb,amsmath}
+
+\def\bstate{\mathbf{x}}
+\def\state{x}
+\def\statedim{m}
+\def\bmeas{\mathbf{y}}
+\def\meas{y}
+\def\measdim{n}
+\def\pnoise{e}
+\def\mnoise{w}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\def\bpnoise{\mathbf{\pnoise}}
+\def\bmnoise{\mathbf{\mnoise}}
+\def\sigmapnoise{\sigma_{\pnoise}}
+\def\sigmamnoise{\sigma_{\mnoise}}
+\def\bpnoiseCov{\mathbf{C}_{\pnoise}}
+\def\bmnoiseCov{\mathbf{C}_{\mnoise}}
+\def\bfn{\mathbf{f}}
+\def\bhn{\mathbf{h}}
+\def\bmeasmat{\mathbf{H}}
+\def\stateMean{\mathbf{m}}
+\def\stateCov{\mathbf{L}}
+\def\LossTotal{\mathcal{L}}
+\def\LossUnsup{\mathcal{L}_u}
+\def\LossSup{\mathcal{L}_{s}}
+\def\IndexSet{\mathcal{I}}
+\newcommand{\IndexN}[1]{\left[#1\right]}
+\def\Dataset{\mathcal{D}}
+\def\btheta{\pmb{\theta}}
+\def\bphi{\pmb{\phi}}
+\def\balpha{\pmb{\alpha}}
+\def\fraclabelled{\kappa}
+\def\subsampfactor{\rho}
+\newcommand{\cardinality}[1]{\vert#1\vert}
+\newcommand{\stateCovprior}[1]{\stateCov_{#1 \vert 1:#1-1}}
+\newcommand{\stateMeanprior}[1]{\stateMean_{#1 \vert 1:#1-1}}
+\newcommand{\stateCovposterior}[1]{\stateCov_{#1 \vert 1:#1}}
+\newcommand\myeq[1]{\stackrel{\mathclap{\scriptsize\mbox{#1}}}{=}}
+\newcommand\mygeq[1]{\stackrel{\mathclap{\scriptsize\mbox{#1}}}{\geq}}
+\newcommand{\stateMeanposterior}[1]{\stateMean_{#1 \vert 1:#1}}
+\newcommand{\matrixexp}[1]{\mathrm{exp}{#1}}
+\newtheorem{assumption}{Assumption}
+\def\setR{\mathbb{R}}
+\def\setN{\mathbb{N}}
+\def\setZ{\mathbb{Z}}
+\def\setC{\mathbb{C}}
+\newcommand{\E}[1]{\mathbb{E}\left[#1\right]}
+\newcommand{\Ewrt}[2]{\mathbb{E}_{#1}\left[#2\right]}
+\newcommand{\scalprod}[2]{\langle #1, #2 \rangle}
+\def\for{\text{ for }}
+\def\with{\text{ with }}
+\def\diag{\text{diag}}
+\def\rnnhstate{\mathbf{z}}
+\def\rnnhstatedim{p}
+\def\rnnhstateindex{z}
+\newcommand{\normaldist}[3]{\mathcal{N}\left(#1; #2, #3\right)}
+\endinput
+%%
+%% End of file `mathstuff.sty'.
