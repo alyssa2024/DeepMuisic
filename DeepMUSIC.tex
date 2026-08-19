@@ -112,6 +112,7 @@
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{amssymb}
+\usepackage{dsfont}% for \mathds{1} (indicator function); amsfonts' \mathbb has no digit glyphs
 \usepackage[amssymb]{SIunits}
 %\usepackage{ifthen}
 \usepackage{longtable}%flexible table definitions
@@ -123,7 +124,9 @@
 \usepackage{amsthm}
 \usepackage{cite}
 \usepackage{subcaption}
-\usepackage{color}
+% IEEEtran.cls already defines \labelindent, which clashes with enumitem's
+% \newlength\labelindent (fatal "already defined" error). Undefine it first.
+\let\labelindent\undefined
 \usepackage{enumitem}
 
 % *** GRAPHICS RELATED PACKAGES ***
@@ -350,7 +353,7 @@
 % handling and breaking URLs. url.sty is already installed on most LaTeX
 % systems. The latest version and documentation can be obtained at:
 % http://www.ctan.org/pkg/url
-% Basically, \url{my_url_here}.
+% Basically, the url command takes the form: url{my_url_here}.
 
 
 
@@ -361,22 +364,9 @@
 % (Unless specifically asked to do so by the journal or conference you plan
 % to submit to, of course. )
 
-\usepackage{graphicx}
-%\usepackage{epstopdf}%to convert eps figures automatically NOT NEEDED ANYMORE
-\usepackage{amsmath}
-\usepackage{amsfonts}
-\usepackage{amssymb}
-\usepackage[amssymb]{SIunits}
-%\usepackage{ifthen}
-\usepackage{longtable}%flexible table definitions
-%\usepackage{enumerate}%for easy definition of  number style
-
-\usepackage{import}%to allow import of svg drawings
-\usepackage{color}%to import svg drawings in color
-\usepackage{algorithm,algpseudocode}% For algorithm environment
-\usepackage{amsthm}
+% NOTE: graphicx, amsmath, amsfonts, amssymb, dsfont, SIunits, longtable, import,
+% color, algorithm/algpseudocode, amsthm and subcaption are already loaded above.
 \usepackage{commath}
-\usepackage{subcaption} % not 'subfigure'
 \usepackage{lipsum}% http://ctan.org/pkg/lipsum
 \usepackage{multicol}% http://ctan.org/pkg/multicols
 \usepackage{multirow}
@@ -506,517 +496,860 @@ We use the typical signal model - sum of sinusoids, as used in standard MUSIC, E
 
 \end{IEEEkeywords}
 
-\section{Usual Notations}
+\section{Introduction}
 
-\textcolor{red}{Note that we have a complex valued signal model for the "sinusoids". Hence we should either work with complex data or make it real valued, say by concatenating real and imaginary parts. }
+Blades are the key components that convert energy in turbomachinery, and they vibrate under aerodynamic load during operation\cite{wang_blade_2026}\cite{li_robust_nodate}. The sustained alternating stress caused by vibration leads to high-cycle fatigue, and further to blade cracks, blade fracture, and even the loss of the whole machine\cite{xu_time-frequency_2025}\cite{yuan_resonance_2026}. Monitoring blade vibration allows the health state of the blade to be assessed in time, and provides a basis for operation decisions and maintenance\cite{wang_blade_2026}\cite{cao_compressed_2024}\cite{jin_deep_2026}. Blade tip-timing (BTT) is a widely used non-contact monitoring technique. It records the arrival times of the blade with probes mounted on the casing, then converts them into vibration displacement, and uses this to identify the vibration parameters of the blade\cite{zablotskiy_measurement_1978}\cite{nieberding_optical_1977}. Its measurement system is shown in Fig.~\ref{fig:btt}.
 
-We use the standard relation of Gaussian log likelihood:
+Irregular sampling and sub-sampling are the intrinsic properties of BTT signals, which bring great challenges to parameter identification\cite{wang_frequency_2025}. The first is the non-uniformity of the sampling. Without vibration, the arrival times of the blade are determined jointly by the probe layout and the rotational speed\cite{guida_modal_nodate}. Physical constraints often make it impossible to mount the probes equidistantly on the casing. If the rotational speed is constant, the non-uniform sampling pattern repeats every revolution\cite{bouchain_blade_2019}. However, fluctuation of the rotational speed breaks the periodicity of the sampling. Non-uniform sampling destroys the orthogonality of the frequency basis and causes spectral leakage\cite{elkhabbazi2026sliding}. The second is sub-sampling. Only a very small number of probes can usually be mounted on the casing, while the modal frequencies of the blade are often significantly higher than the rotational frequency \cite{wang_improved_2020}\cite{kharyton_advanced_2021}. The measurement mechanism of one sample per probe per revolution causes severe sub-sampling. When the Nyquist sampling theorem is not satisfied, aliasing appears in the frequency spectrum\cite{kharyton_discussion_2017}. When there are multiple vibration components, the alias of a strong component can be far stronger than a weak component. The true frequency can therefore no longer be identified by peak strength in the spectrum.
+
+The failure of spectral analysis requires new methods for BTT signals. The blade response is dominated by a few modes, so only a few vibration components are present \cite{bouchain_blade_2019}. Subspace methods exploit this prior knowledge through the low rank of the signal covariance. Multiple signal classification (MUSIC), transferred from the direction-of-arrival (DOA) field, estimates the covariance from multiple snapshots and eigendecomposes it into a low-rank signal subspace and a noise subspace. The steering vector of a true frequency is orthogonal to the noise subspace. A frequency scan turns this orthogonality into a pseudo-spectrum, and its peaks are the frequency estimates\cite{schmidt_multiple_1986}. However, the assumption that the snapshots share the same steering vector is broken under a variable rotational speed. It also cannot give amplitude estimates, which can only be solved separately after the frequency estimation is finished\cite{wang_improved_2020}. 
+
+Both limitations are avoided when the frequencies and the amplitudes are recovered together by signal reconstruction and compressed sensing. Most of these methods are defined on a discrete frequency grid. Each grid point together with the time-of-arrival (TOA) sequence forms a frequency atom, which is one column of the observation matrix, so the measured displacement is expressed as a weighted sum of the atoms. A sparse prior is then imposed, so that only a few atoms are active, and the weights are solved iteratively. Orthogonal matching pursuit (OMP)\cite{Pati_Orthogonal_1993}\cite{Bouchain_Sparse_2018} and block-OMP\cite{Eldar_Block_2010}\cite{bouchain_blade_2019} solve the problem under an $\ell_0$ constraint. They pick at each step the frequency atom most correlated with the residual, remove its contribution from the residual, and continue to iterate. The greedy selection is irreversible. If one step selects the alias of a strong component, the residual is updated with a wrong atom and the error propagates to all later steps. LASSO\cite{tibshirani_regression_2011} uses the $\ell_1$-norm as the sparsity penalty and estimates sparse weights on a fixed observation matrix. The sparsity hyperparameter $\lambda$ is very hard to decide under real conditions. Sparse iterative covariance-based estimation (SPICE)\cite{zachariah_online_2015}\cite{kharyton_advanced_2021} requires no such hyperparameter, but still needs the candidate frequencies to be given in advance. The performance of such on-grid methods depends on the design of the candidate frequencies. A higher frequency resolution reduces the off-grid error, but it also makes the neighboring atoms strongly coherent and increases the computational cost, so refining the grid does not approach the continuous solution\cite{badiu_variational_2017}. Off-grid methods\cite{Yang_Off_2013}\cite{Mamandipoor_Newtonized_2016} add a parameterized offset to each active atom and correct the grid mismatch, but the atom itself is still selected on the discrete grid. Gridless methods\cite{Tang_Compressed_2013}\cite{Bhaskar_Atomic_2013} return to the continuous domain, at the price of a much heavier optimization\cite{jin_deep_2026}. 
+
+In recent years, deep learning (DL) has been widely applied in line spectral estimation and in the DOA field, which provides a reference for the BTT signal processing. DeepFreq\cite{izacard_data-driven_2021} feeds the temporal observation sequence directly into a convolutional neural network (CNN) and returns a pseudo-spectrum, but its convolution assumes equally spaced samples. Many works in the DOA field inherit the idea of MUSIC. They build the covariance matrix into the network\cite{Merkofer_Deep_2022}\cite{weiser_unsupervised_2023}, which is again restricted by the shared steering vector mentioned above. Both classes of work rely on periodic sampling structure, which is vulnerable to the fluctuating rotational speed. Nevertheless, they show the potential capability of DL to estimate the sinusoid parameters from the learnable frequency representation. ResFreq\cite{jin_deep_2026} brings this idea to BTT signals. It localizes on the grid and then refines off the grid. The CNN gives the probability that each coarse grid holds a component in the first stage. Then the selected candidates are refined by sparse Bayesian inference (SBI). The input to the CNN is the covariance matrix, so the network is trained at a constant rotational speed and other speeds are normalized to that speed at inference. This avoids a retraining, but the aliasing structure depends on the rotational speed. The normalization therefore discards the structure that separates a true frequency from its aliases.
+
+In practice a long observation sequence is divided into windows. The cost of processing it as a whole grows rapidly with its length, and the covariance-based methods need the signal to stay approximately stationary within a window. Each window is then estimated independently. This discards the correlation prior across windows that the true frequency is the same in every window\cite{elkhabbazi2026sliding}\cite{guida_bayesian_nodate}.
+
+Moreover, none of the methods above gives the uncertainty of the estimate. Variational learning obtains the posterior distribution of the parameters by maximizing a lower bound of the likelihood (ELBO), which makes the uncertainty a part of the estimation result. \cite{badiu_variational_2017} estimates the line spectrum in this way and returns a posterior for every frequency. The landscape of this bound, however, carries a large number of stationary points, and a first-order optimizer stops at whichever one it starts near\cite{guo_unsupervised_2023}. Under sub-sampling the aliases of a frequency reconstruct the observation equally well and become optima of the same bound, which a longer aperture does not remove\cite{guo_unsupervised_2023}. The initialization therefore has to exclude them. Under an uninformative prior the frequencies fall anywhere in the band, so regressing them as continuous values needs a pairing between outputs and frequencies before a mean squared error can be computed. A discrete candidate set turns this into a set prediction, where each band reports whether a component is present, not which component it is.
+
+The grid, however, bounds what such a set can deliver, and the final accuracy has to be obtained on the continuous frequency axis. We therefore propose a two-stage framework for the posterior distribution of vibration parameters. The first stage locates the candidate bands where the true frequencies lie. To let the localization use the complete observation sequence, we feed the sequence to a sequence model. Its training is supervised on a synthesized dataset. A soft-label binary cross-entropy (BCE) loss and a mean squared error (MSE) loss supervise the band probability and the within-band frequency offset, respectively, while a Gaussian negative log-likelihood (GNLL) trains the variance. The rotational frequency is explicitly injected into the model to learn the aliasing structure. It finally outputs the probability that each band holds a frequency and the conditional posterior distribution of the frequency within that band. The second stage takes this as the initial value of the variational distribution. The variational lower bound of the marginal likelihood is maximized for each sequence. The parameters of the frequency posterior distribution are optimized as continuous free variables, which simultaneously yields the amplitude posterior. The main contributions are as follows.
+
+\begin{enumerate}
+\item We propose a learning-based encoder that outputs a frequency posterior conditioned on discrete bands. The encoder shows a highly accurate localization ability under low SNR and various rotational fluctuations, which provides a good posterior initialization for the second stage.
+
+\item We introduce variational learning for each sequence. It removes the off-grid error of the frequency estimation, refines the continuous frequency accuracy and outputs the amplitude estimate.
+
+\item We evaluate the proposed method under a range of experimental settings. The method demonstrates higher noise robustness than the other methods, and has a significant advantage in computational speed.
+\end{enumerate}
+
+Since the framework only requires the sampling pattern to be known and the physical signal model to be known, it can also be extended to other line spectral parameter inversion problems with non-uniform sampling.
+
+The remainder of this paper is organized as follows. Section II introduces the BTT measurement model and formulates the estimation task. Section III describes the proposed two-stage framework, covering the data-driven posterior estimator and the per-instance variational learning. Section IV presents simulation results on synthetic and measured BTT data, and compares the proposed method with classical estimators. Finally, Section V concludes the paper.
+
+\label{sec:notation}
+\textbf{Notation:} Bold lowercase symbols denote vectors and bold uppercase symbols denote matrices, e.g. $\mathbf{c}$ is a vector whose $k$th component is the scalar $c_k$, and $\Phi$ is a matrix whose $(n,k)$th entry is $[\Phi]_{nk}$. An overbar marks a quantity collected over the whole observation sequence, e.g. $\bar{\mathbf{y}}=[y_1,\dots,y_N]^{\top}$. The notation $\{\cdot\}$ compactly defines a set of values, e.g. $\{t_n\}_{n=1}^{N}$. The superscripts $(\cdot)^{\top}$ and $(\cdot)^{\mathsf H}$ denote the transpose and the conjugate transpose, $\odot$ denotes element-wise multiplication, and $\mathbb{E}[\cdot]$ and $\mathds{1}\{\cdot\}$ denote the expectation operator and the indicator function. The circularly symmetric complex Gaussian, real Gaussian and uniform distributions are written as $\mathcal{CN}(\cdot)$, $\mathcal{N}(\cdot)$ and $\mathcal{U}[\cdot]$ respectively.
+
+\section{Signal Model and Problem Formulation}
+
+
+\subsection{BTT signal measurement model}
+To measure the vibration displacement of a blade, $P$ probes are mounted around the casing circumference, as illustrated in Fig.~\ref{fig:btt}. One probe is taken as the angular reference, whose $\theta_1=0$. The angular distance between the reference probe and the $p$th probe is denoted by $\theta_p\in[0,2\pi)$, with $0=\theta_1<\theta_2<\dots<\theta_P<2\pi$. A blade passes all $P$ probes once per revolution, and each passage yields one TOA record.
+
+\begin{figure*}[!t]
+\centering
+\begin{subfigure}[b]{0.3\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/BTT.png}
+  \caption{Measurement system.}
+  \label{fig:btt_system}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.55\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/TOA.png}
+  \caption{TOA samples of two revolutions.}
+  \label{fig:btt_toa}
+\end{subfigure}
+\caption{Blade tip-timing measurement. (a) system demonstration. (b) TOA examples.}
+\label{fig:btt}
+\end{figure*}
+
+Let $f_{\mathrm{rot},r}$ denote the rotation frequency of the $r$th revolution. In this article, it can vary across revolutions, but remains constant within one revolution. Assuming there is no vibration, the ideal TOA of the blade at the $p$th probe in the $r$th revolution is 
 \begin{eqnarray}
+\label{eq:toa}
+\tilde{t}_{r,p}=\sum_{i=1}^{r-1}\frac{1}{f_{\mathrm{rot},i}}+\frac{1}{f_{\mathrm{rot},r}}\cdot\frac{\theta_p}{2\pi},
+\qquad r=1,\dots,J,\ \ p=1,\dots,P,
+\end{eqnarray}
+where $J$ is the number of revolutions in the sequence. Vibration shifts the real TOA $t_{r,p}$ from the ideal TOA $\tilde{t}_{r,p}$.  The time difference then is converted into a circumferential tip displacement via
+\begin{eqnarray}
+\label{eq:disp}
+y_{r,p}=\big(t_{r,p}-\tilde{t}_{r,p}\big)\cdot 2\pi Rf_{\mathrm{rot},r},
+\end{eqnarray}
+where $R$ is the distance from the blade base to the disk center. By reindexing the samples in ascending order of the real TOA, an observation sequence can thus be expressed as $\bar{\mathbf{y}}=[y_1,\dots,y_N]^{\top}\in\mathbb{C}^{N}$, where $N=JP$.
+
+\subsection{Signal Model}
+Assume the vibration displacement $y_{n}$ can be expressed as the sum of $K$ sinusoids, disturbed by independent circularly symmetric complex Gaussian noise $w_n$
+
+\begin{eqnarray}
+\label{eq:signal}
+    y_n = \sum_{k=1}^K c_k \, e^{j 2\pi f_k t_{n}} + w_{n} = x_{n} + w_{n}, \quad w_n \overset{\mathrm{iid}}{\sim} \mathcal{CN}(0,\sigma_w^2), \quad n = 1,\dots,N
+\end{eqnarray}
+
+where $c_k = \alpha_k e^{j \phi_k}$ is the complex amplitude of the $k$th sinusoid, in which $\alpha_k$ is its positive amplitude and $\phi_k\in[0,2\pi)$ its initial phase. The frequency $f_k$ is supported on a physical band, $f_k\in[f_{\min},f_{\max}]$, set by physical prior knowledge of the blade vibration.
+Collecting the $N$ samples, the observation sequence can equivalently be written in matrix form as
+\begin{eqnarray}
+\label{eq:matrixform}
+\bar{\mathbf{y}} = \Phi(\mathbf{f})\,\mathbf{c} + \mathbf{w} = \bar{\mathbf{x}} + \mathbf{w},
+\qquad [\Phi(\mathbf{f})]_{nk} = e^{j 2\pi f_k t_{n}},
+\end{eqnarray}
+where $\mathbf{f}=[f_1,\dots,f_K]^{\top}\in\mathbb{R}^{K}$, $\mathbf{c}=[c_1,\dots,c_K]^{\top}\in\mathbb{C}^{K}$ and $\mathbf{w}=[w_1,\dots,w_N]^{\top}\in\mathbb{C}^{N}$. The vector $\bar{\mathbf{x}}=[x_1,\dots,x_N]^{\top}\in\mathbb{C}^{N}$ is the noise-free signal sequence. The matrix $\Phi(\mathbf{f})\in\mathbb{C}^{N\times K}$ is the observation matrix, whose $k$th column $[e^{j2\pi f_k t_1},\dots,e^{j2\pi f_k t_N}]^{\top}$ is the Fourier basis at the frequency $f_k$ sampled at the arrival times $\{t_n\}$.
+
+Fig.~\ref{fig:btt_toa} illustrates an example of the non-uniform and sub-sampled measurement. The $K=6$ components in \eqref{eq:signal} sum to the noise-free continuous vibration displacement of the blade, drawn as the blue curve. This curve is evaluated on $2000$ uniform samples per revolution. Their frequencies are $\{54.1,\,135.0,\,260.7,\,308.6,\,421.8,\,464.1\}$~Hz, and their amplitudes, normalized by the root mean square of the sequence, are $\{0.05,\,0.53,\,0.36,\,0.72,\,0.45,\,0.10\}$, respectively. The seven probes are mounted at the circumferential angles $\{0^\circ,$\allowbreak\ $30^\circ,$\allowbreak\ $50^\circ,$\allowbreak\ $100^\circ,$\allowbreak\ $170^\circ,$\allowbreak\ $240^\circ,$\allowbreak\ $290^\circ\}$, and the rotational speed rises from $30.3$~Hz in the first revolution to $30.7$~Hz in the second. The red circles denote the observed samples $y_{r,p}$.
+
+The quantities which we are interested in are the complex amplitudes and frequencies of the $K$ sinusoids. Let these parameters be denoted by the 2K dimensional vector
+\begin{eqnarray}
+\label{eq:psi}
+\pmb{\psi} = [c_1, f_1, \ \dots,\ c_k, f_k, \ \dots,\ c_K, f_K]^{\top}.
+\end{eqnarray}
+Because $\bar{\mathbf{x}}$ is fully determined by $\pmb{\psi}$, we write $\bar{\mathbf{x}} \triangleq \bar{\mathbf{x}}(\pmb{\psi})$, and
+\begin{eqnarray}
+\label{eq:Gaussian}
 \begin{array}{rl}
-\log \mathcal{N}(x;\mu, \sigma^2) & = -1/2 \log (2\pi) -1/2 \log \sigma^2  - \frac{1}{2 \sigma^2} (x- \mu)^2
+     \log p(\bar{\mathbf{y}}|\pmb{\psi}) & \triangleq \log p\big(\bar{\mathbf{y}} \,\big|\, \bar{\mathbf{x}}(\pmb{\psi})\big)
+       = \log \displaystyle\prod_{n=1}^{N} p\big(y_{n}\,\big|\, x_{n}( \pmb{\psi})\big)
+       = \sum_{n=1}^{N} \log p(y_{n}| \pmb{\psi}) \\[10pt]
+     & = \displaystyle\sum_{n=1}^{N} \log \mathcal{CN}\!\Big(y_n; \sum_{k=1}^K c_k \, e^{j 2\pi f_k t_n },\ \sigma_w^2\Big) \\[10pt]
+     & = \displaystyle\sum_{n=1}^{N} \left[ -\log(\pi \sigma_w^{2})
+       - \frac{1}{\sigma_w^{2}}\Big|y_n-\sum_{k=1}^K c_k \, e^{j 2\pi f_k t_n }\Big|^{2} \right] \\[10pt]
+     & = -N\log(\pi\sigma_w^{2}) - \dfrac{1}{\sigma_w^{2}}\big\|\bar{\mathbf{y}}-\Phi(\mathbf{f})\,\mathbf{c}\big\|^{2}
 \end{array}
 \end{eqnarray}
 
-
-\section{Signal Model}
-
-The standard sinusoidal signal model and the measurement model are:
+\subsection{Estimation Task}
+In the Bayesian framework, our task is to find the posterior of the parameters $\pmb{\psi}$ given the observation sequence
 \begin{eqnarray}
-    x_t = \sum_{k=1}^K \alpha_k \, e^{j( \omega_k t + \phi_k)}, \,\,\, y_t = x_t + w_t, w_t \sim \mathcal{N}(0,\sigma^2), t=t_1, t_2, \hdots, t_l, \hdots.
-\end{eqnarray}
-In practice, we can assume that the measurement sequence is received as a long sequence $\bar{\mathbf{y}} = y_{t_1}, y_{t_2}, \hdots, y_{t_n}, \hdots, y_{t_N}$, where $N$ is large. The sequence $\mathbf{y}$ corresponds to the sequence $\bar{\mathbf{x}} = x_{t_1}, x_{t_2}, \hdots, x_{t_n}, \hdots, x_{t_N}$. Let the parameters of  sinusoids be denoted by $3K$-dimensional vector $\pmb{\psi} = [\psi_1, \psi_2, \hdots, \psi_{k'}, \hdots, \psi_{3K}]^{\top} = [\alpha_1, \omega_1, \phi_1, \alpha_2, \omega_2, \phi_2, \hdots, \alpha_k, \omega_k, \phi_k, \hdots, \alpha_K, \omega_K, \phi_K]^{\top}$. Note that, given $\pmb{\psi}$, the sequence $\bar{\mathbf{x}}$ is fully deterministic. So, when appropriate, we use a notation $\bar{\mathbf{x}} \triangleq \bar{\mathbf{x}}(\pmb{\psi})$, and similarly $x_t \triangleq x_t(\pmb{\psi})$. In the Bayesian approach, our task is to find the posterior $p(\pmb{\psi}|\bar{\mathbf{y}})$. We have the following assumptions: 
-\begin{eqnarray}
-    p(\pmb{\psi})= \prod_{k'}^{3K} p(\psi_{k'}).
+\label{eq:task}
+p(\pmb{\psi}\mid\bar{\mathbf{y}}).
 \end{eqnarray}
 
+\section{Method}
 
-Note the following relations:
+\subsection{Proposed Approach}
+\label{sec:approach}
+
+\begin{figure}[!t]
+\centering
+\begin{subfigure}[b]{\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/Encoder_Training.png}
+  \caption{Encoder training.}
+  \label{fig:pipeline_train}
+\end{subfigure}
+
+\vspace{2mm}
+
+\begin{subfigure}[b]{\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/Variational_Learning.png}
+  \caption{Per-instance variational learning.}
+  \label{fig:pipeline_refine}
+\end{subfigure}
+\caption{The two stages of the method. (a) is run once, offline, on the synthetic
+dataset; (b) is run for every measurement, with the encoder held fixed. Colours in
+(a) mark which of the four stages a path belongs to. $K_c$ is the number of
+candidate bands actually taken, with $K_c\ge K$.}
+\label{fig:pipeline}
+\end{figure}
+
+The proposed method has two stages. A network trained offline by supervised learning gives a posterior over the frequencies, and a per-sequence variational stage then refines it on the continuous axis.
+
+In the first stage, our idea is to use a deep neural network (DNN) to output the parameters of $p(\pmb{\psi}\mid\bar{\mathbf{y}})$, with the network parameters $\pmb{\theta}$. Training $\pmb{\theta}$ requires many different $\pmb{\psi}$ in the dataset. However, only a few observation sequences are available from the real system, and if they come from the same stable system they correspond to a single $\pmb{\psi}$. We therefore synthesize a dataset
 \begin{eqnarray}
-\begin{array}{rl}
-     p(y_t | \pmb{\psi}) & \triangleq p(y_t | x_t( \pmb{\psi})) = \mathcal{N}(\sum_{k=1}^K \alpha_kb \, e^{j( \omega_k t + \phi_k)}, \sigma^2)  \\
-     p(\bar{\mathbf{y}}|\pmb{\psi}) & \triangleq p(\bar{\mathbf{y}} | \bar{\mathbf{x}}(\pmb{\psi})) = \prod_{n=1}^{N} p(y_{t_n}| \pmb{\psi}) = \prod_{n=1}^{N} p(y_{t_n}| x_{t_n}( \pmb{\psi}))  \\
-     \log p(\bar{\mathbf{y}}|\pmb{\psi}) & =\sum_{n=1}^{N} \log p(y_{t_n}| \pmb{\psi}) 
-\end{array}     
+\label{eq:dataset}
+\mathcal{D}=\big\{(\bar{\mathbf{y}}^{(i)},\,\pmb{\psi}^{(i)})\big\}_{i=1}^{Q},
 \end{eqnarray}
+of $Q$ sequence samples. For each $i$, we draw $\pmb{\psi}^{(i)}$ from a prior $p(\pmb{\psi})$ and generate the corresponding sequence $\bar{\mathbf{y}}^{(i)}$ through the signal model \eqref{eq:signal} and \eqref{eq:matrixform}. 
 
-
-\subsection{A priori knowledge about appropriate distributions}
-
-The quantities which we are interested in are amplitude, angular velocity and phase of sinusoids. The appropriate distributions to characterize them are Gaussian distribution, Maxwell–Boltzmann distribution, von Mises distribution. So use these distributions appropriately to represent variational distributions. In case we have problem, we have to use Gaussian distribution as Maxwell–Boltzmann and von Mises distributions have similarity to Gaussian distribution.
-
-The challenge is how to sample from such distributions and design DNNs that allow gradient flow.
-
-
-\subsection{Variational learning}
-
-We first try to find a lower bound of the logarithmic evidence, as follows:
-
+To train the network, a challenge is how to design the form of $p(\pmb{\psi}\mid\bar{\mathbf{y}})$ so that training is analytically tractable. Assuming the prior of parameters are independent from each other
 \begin{eqnarray}
+\label{eq:factor_prior}
+p(\pmb{\psi})=p(\mathbf{c})\,p(\mathbf{f})=\prod_{k=1}^{K}p(c_k)\,p(f_k).
+\end{eqnarray}
+The posterior, without loss of generality, factors by the chain rule as
+\begin{eqnarray}
+\label{eq:factor_post}
+p(\pmb{\psi}\mid\bar{\mathbf{y}})=p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})\,p(\mathbf{f}\mid\bar{\mathbf{y}}).
+\end{eqnarray}
+The amplitudes need not be inferred separately: once the frequencies $\mathbf{f}$ are fixed and the sampling instants $\{t_n\}$ are known, the observation matrix $\Phi(\mathbf{f})$ in \eqref{eq:matrixform} is fixed and the complex amplitudes have a closed-form least-squares solution,
+\begin{eqnarray}
+\label{eq:cls}
+\hat{\mathbf{c}}(\mathbf{f})=\big(\Phi(\mathbf{f})^{\mathsf H}\Phi(\mathbf{f})\big)^{-1}\Phi(\mathbf{f})^{\mathsf H}\bar{\mathbf{y}}.
+\end{eqnarray}
+The problem thus reduces to designing the frequency posterior $p(\mathbf{f}\mid\bar{\mathbf{y}})$. Assuming the frequency posteriors are independent from each other
+\begin{eqnarray}
+\label{eq:factor_freq_post}
+p(\mathbf{f}\mid\bar{\mathbf{y}})=\prod_{k=1}^{K}p(f_k\mid\bar{\mathbf{y}}).
+\end{eqnarray}
+A common design of $p(f_k\mid\bar{\mathbf{y}})$ is the Gaussian distribution over the physical band. However, such single unimodal distribution is a poor description here. Under the non-informative prior, K frequencies are randomly sampled from the same support.
+We therefore first try to localize different narrow bands where each frequency lies on. This localization process is modeled as a classification problem. The physical band is equally divided into $G$ narrow bands $\{B_g\}_{g=1}^{G}$ of width $\Delta$~Hz. An encoder network is trained to output, for each band $B_g$, both the probability $\rho_g\in[0,1]$ that one of the frequencies falls in it and the posterior distribution of the frequency conditioned on that band, so that it acts as a band selector.
+In the training, the encoder does not distinguish which band a frequency belongs to. Instead the true frequencies $\{f_k^\ast\}$ of each sequence are encoded into band-level labels without identity. It therefore describes an identity-free frequency $f$, and the bands are treated independently, so $\sum_{g=1}^{G}\rho_g\approx K$ when $K$ frequencies are present. The encoder is trained offline on $\mathcal{D}$.
+
+Within a band we model the frequency by a Gaussian,
+\begin{eqnarray}
+\label{eq:condgauss}
+p(f\mid\bar{\mathbf{y}},g)=\mathcal{N}\!\big(f;\mu_g(\bar{\mathbf{y}}),\sigma_g^2(\bar{\mathbf{y}})\big),
+\end{eqnarray}
+where $\mu_g$ and $\sigma_g^2$ are the mean and variance of the frequency conditioned on band $B_g$. We recover the posterior of each frequency by taking the $K$ bands with the largest probabilities,
+\begin{eqnarray}
+\label{eq:pick}
+\{g_k\}_{k=1}^{K}=\operatorname*{arg\,max}_{g}{}^{\,(K)}\ \rho_g,
+\end{eqnarray}
+each selected band $B_{g_k}$ giving one frequency whose posterior $p(f_k\mid\bar{\mathbf{y}})=\mathcal{N}(f_k;\mu_{g_k}(\bar{\mathbf{y}}),\sigma_{g_k}^2(\bar{\mathbf{y}}))$ is its conditional Gaussian \eqref{eq:condgauss}. 
+
+The frequency posterior obtained so far is parameterized by the network $\pmb{\theta}$ and is confined to the band grid. The second stage therefore re-estimates it for each sequence by a variational distribution $q(\pmb{\psi}\mid\bar{\mathbf{y}})$, trained by maximizing the likelihood of the observed sequence. The log-evidence decomposes as
+\begin{eqnarray}
+\label{eq:logevi}
     \begin{array}{rl}
       \log p(\bar{\mathbf{y}})   & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log p(\bar{\mathbf{y}}) \, d\pmb{\psi} \\
          & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log \frac{p(\bar{\mathbf{y}},\pmb{\psi})}{p(\pmb{\psi}|\bar{\mathbf{y}})} \, d\pmb{\psi} \\
-         & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log \left( \frac{p(\bar{\mathbf{y}},\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}})} . \frac{q(\pmb{\psi} | \bar{\mathbf{y}})}{p(\pmb{\psi}|\bar{\mathbf{y}})} \right) \, d\pmb{\psi} \\
-         & = \underbrace{\displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log  \frac{p(\bar{\mathbf{y}},\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}})}  \, d\pmb{\psi}}_{\mathcal{L}(\bar{\mathbf{y}})} + \underbrace{\displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log \frac{q(\pmb{\psi} | \bar{\mathbf{y}})}{p(\pmb{\psi}|\bar{\mathbf{y}})} \, d\pmb{\psi} }_{\mathrm{D}_{\mathrm{KL}}(q\|p)} \\ 
+         & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log \left( \frac{p(\bar{\mathbf{y}},\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}})} \cdot \frac{q(\pmb{\psi} | \bar{\mathbf{y}})}{p(\pmb{\psi}|\bar{\mathbf{y}})} \right) \, d\pmb{\psi} \\
+         & = \underbrace{\displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log  \frac{p(\bar{\mathbf{y}},\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}})}  \, d\pmb{\psi}}_{\mathcal{L}(\bar{\mathbf{y}})} + \underbrace{\displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log \frac{q(\pmb{\psi} | \bar{\mathbf{y}})}{p(\pmb{\psi}|\bar{\mathbf{y}})} \, d\pmb{\psi} }_{\mathrm{D}_{\mathrm{KL}}(q\|p)} \\
     \end{array}
 \end{eqnarray}
 Here, $\mathrm{D}_{\mathrm{KL}}(q\|p)$ is the Kullback–Leibler (KL) divergence between $q(\pmb{\psi} | \bar{\mathbf{y}})$ and $p(\pmb{\psi} | \bar{\mathbf{y}})$. As $\mathrm{D}_{\mathrm{KL}}(q\|p) \geq 0$,  $\mathcal{L}(\bar{\mathbf{y}})$ is a lower bound of the logarithmic evidence $\log p(\bar{\mathbf{y}})$. This is also known evidence lower bound (ELBO). Maximization of $\mathcal{L}(\bar{\mathbf{y}})$ leads to decrease in $\mathrm{D}_{\mathrm{KL}}(q\|p)$, and $q(\pmb{\psi} | \bar{\mathbf{y}})$ approaches  $p(\pmb{\psi} | \bar{\mathbf{y}})$.
 
-
-\subsection{Variational deep learning}
-
-We now develop a variational deep learning approach where the variational distribution $q(\pmb{\psi} | \bar{\mathbf{y}})$ is provided by a deep neural network. We can rearrange the data as short multiple sequences or an array/tensor as we like, and then use sequence deep learning methods like RNNs, or Transformers, or array (or image) processing method like CNNs to have the parameters of $q(\pmb{\psi} | \bar{\mathbf{y}})$. Let the parameters of the chosen DNN be denoted by $\pmb{\theta}$. Therefore, we write $q(\pmb{\psi} | \bar{\mathbf{y}}) \triangleq q(\pmb{\psi} | \bar{\mathbf{y}}; \pmb{\theta})$. For simplicity, we assume $q(\pmb{\psi} | \bar{\mathbf{y}}; \pmb{\theta}) = \prod_{k'=1}^{3K} q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta})$. Now, we have the following relation:
-
+Then, the ELBO takes the form
 \begin{eqnarray}
+\label{eq:ELBO}
     \begin{array}{rl}
-     \mathcal{L}(\bar{\mathbf{y}})  
-         & \triangleq  \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})  \log  \frac{p(\bar{\mathbf{y}},\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})}  \, d\pmb{\psi} \\
-     
-         & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})  \log  \frac{p(\bar{\mathbf{y}}|\pmb{\psi}) p(\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})}  \, d\pmb{\psi} \\
-         & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})  \log  p(\bar{\mathbf{y}}|\pmb{\psi}) \, d\pmb{\psi} + \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})  \log  \frac{ p(\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})}  \, d\pmb{\psi} \\ 
+     \mathcal{L}(\bar{\mathbf{y}})
+         & \triangleq  \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log  \frac{p(\bar{\mathbf{y}},\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}})}  \, d\pmb{\psi} \\
 
-         & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})  \log  p(\bar{\mathbf{y}}|\pmb{\psi}) \, d\pmb{\psi} - \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})  \log  \frac{ q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta}) } {p(\pmb{\psi})}  \, d\pmb{\psi} \\ 
+         & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log  p(\bar{\mathbf{y}}|\pmb{\psi}) \, d\pmb{\psi} + \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log  \frac{ p(\pmb{\psi})} {q(\pmb{\psi} | \bar{\mathbf{y}})}  \, d\pmb{\psi} \\
 
-         & = \displaystyle\int_{\pmb{\psi}} \prod_{k'=1}^{3K} q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta}) \log \prod_{n=1}^{N}p(y_{t_n}| \pmb{\psi}) \, d\pmb{\psi} - \displaystyle\int_{\pmb{\psi}} \prod_{k'=1}^{3K} q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta})  \log  \frac{ \prod_{k'=1}^{3K} q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta})  } {\prod_{k'}^{3K} p(\psi_{k'})}  \, d\pmb{\psi} \\
+         & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}})  \log  p(\bar{\mathbf{y}}|\pmb{\psi}) \, d\pmb{\psi} - \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi} | \bar{\mathbf{y}} )  \log  \frac{ q(\pmb{\psi} | \bar{\mathbf{y}}) } {p(\pmb{\psi})}  \, d\pmb{\psi} \\
 
-         & = \displaystyle\int_{\pmb{\psi}} \prod_{k'=1}^{3K} q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta})  \sum_{n=1}^{N} \log p(y_{t_n}| \pmb{\psi}) \, d\pmb{\psi} - \sum_{k'=1}^{3K} \mathrm{D}_{\mathrm{KL}}(q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta}) \| p(\psi_{k'})) \\
-
-         & =  \displaystyle\sum_{n=1}^{N} \mathbb{E}_{q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})} [\log p(y_{t_n}| \pmb{\psi})] - \sum_{k'=1}^{3K} \mathrm{D}_{\mathrm{KL}}(q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta}) \| p(\psi_{k'})) \\
-
-         & \triangleq \mathcal{L}(\bar{\mathbf{y}}; \pmb{\theta}, \sigma^2)
-                  
+         & =  \displaystyle \mathbb{E}_{q(\pmb{\psi} | \bar{\mathbf{y}})} [\log p(\bar{\mathbf{y}}| \pmb{\psi})] - \mathrm{D}_{\mathrm{KL}}\big(q(\pmb{\psi}\mid\bar{\mathbf{y}}) \,\big\|\, p(\pmb{\psi})\big) \\
     \end{array}
 \end{eqnarray}
+Considering the unique closed-form optimal solution of $\mathbf{c}$ for given $\mathbf{f}$ in \eqref{eq:cls}, we do not learn a variational factor for $\mathbf{c}$ but marginalize it,
+\begin{eqnarray}
+\label{eq:amp_marg}
+p(\bar{\mathbf{y}}\mid\mathbf{f})=\int_{\mathbf{c}} p(\bar{\mathbf{y}}\mid\mathbf{f},\mathbf{c})\,p(\mathbf{c})\,d\mathbf{c}.
+\end{eqnarray}
+We use a zero-mean complex Gaussian to define $p(\mathbf{c})$,
+\begin{eqnarray}
+\label{eq:amp_prior}
+p(\mathbf{c})=\mathcal{CN}(\mathbf{0},\mathbf{T}),\qquad \mathbf{T}=\operatorname{diag}(\tau_1^2,\dots,\tau_{K}^2),
+\end{eqnarray}
+where $\mathbf{T}\in\mathbb{R}^{K\times K}$ is diagonal and $\tau_k^2=\mathbb{E}[|c_k|^2]$ is the prior variance of the $k$th complex amplitude, equivalent to $\alpha_k\sim\mathrm{Rayleigh}(\tau_k/\sqrt{2})$ and $\phi_k\sim\mathrm{U}[0,2\pi)$,
+\begin{eqnarray}
+\label{eq:amp_phase_prior}
+p(\alpha_k)=\frac{2\alpha_k}{\tau_k^2}\,e^{-\alpha_k^2/\tau_k^2},\quad \alpha_k>0,
+\qquad
+p(\phi_k)=\frac{1}{2\pi},\quad \phi_k\in[0,2\pi).
+\end{eqnarray}
+Writing $\Phi=\Phi(\mathbf{f})$ and substituting the densities \eqref{eq:Gaussian} and \eqref{eq:amp_prior} into \eqref{eq:amp_marg}, the exponent is quadratic in $\mathbf{c}$ and can be grouped by its order in $\mathbf{c}$ and completed into a square,
+\begin{eqnarray}
+\label{eq:quadform}
+    \begin{array}{rl}
+     p(\bar{\mathbf{y}}\mid\mathbf{f})
+     & = \displaystyle\int_{\mathbf{c}} \frac{1}{\pi^{N}\sigma_w^{2N}}
+         \exp\Big(-\frac{\|\bar{\mathbf{y}}-\Phi\mathbf{c}\|^{2}}{\sigma_w^{2}}\Big)\,
+         \frac{1}{\pi^{K}\det\mathbf{T}}
+         \exp\big(-\mathbf{c}^{\mathsf H}\mathbf{T}^{-1}\mathbf{c}\big)\,d\mathbf{c} \\[12pt]
+     & = \dfrac{1}{\pi^{N+K}\sigma_w^{2N}\det\mathbf{T}}
+         \displaystyle\int_{\mathbf{c}} \exp\Big(
+         -\dfrac{(\bar{\mathbf{y}}-\Phi\mathbf{c})^{\mathsf H}(\bar{\mathbf{y}}-\Phi\mathbf{c})}{\sigma_w^{2}}
+         - \mathbf{c}^{\mathsf H}\mathbf{T}^{-1}\mathbf{c}\Big)\,d\mathbf{c} \\[12pt]
+     & = \dfrac{1}{\pi^{N+K}\sigma_w^{2N}\det\mathbf{T}}
+         \displaystyle\int_{\mathbf{c}} \exp\Big(
+         -\mathbf{c}^{\mathsf H}\Big(\underbrace{\mathbf{T}^{-1}+\dfrac{\Phi^{\mathsf H}\Phi}{\sigma_w^{2}}}_{\textstyle S}\Big)\mathbf{c}
+         + \dfrac{\mathbf{c}^{\mathsf H}\Phi^{\mathsf H}\bar{\mathbf{y}}}{\sigma_w^{2}}
+         + \dfrac{\bar{\mathbf{y}}^{\mathsf H}\Phi\mathbf{c}}{\sigma_w^{2}}
+         - \dfrac{\|\bar{\mathbf{y}}\|^{2}}{\sigma_w^{2}}\Big)\,d\mathbf{c} \\[12pt]
+     & = \dfrac{1}{\pi^{N+K}\sigma_w^{2N}\det\mathbf{T}}
+         \exp\Big(\hat{\mathbf{c}}^{\mathsf H}S\hat{\mathbf{c}}-\dfrac{\|\bar{\mathbf{y}}\|^{2}}{\sigma_w^{2}}\Big)
+         \displaystyle\int_{\mathbf{c}} \exp\big(-(\mathbf{c}-\hat{\mathbf{c}})^{\mathsf H}S(\mathbf{c}-\hat{\mathbf{c}})\big)\,d\mathbf{c},
+    \end{array}
+\end{eqnarray}
+where the completion of the square uses, for the linear coefficient $\mathbf{b}\triangleq\Phi^{\mathsf H}\bar{\mathbf{y}}/\sigma_w^{2}$,
+\begin{eqnarray}
+\label{eq:square}
+-\mathbf{c}^{\mathsf H}S\mathbf{c}+\mathbf{c}^{\mathsf H}\mathbf{b}+\mathbf{b}^{\mathsf H}\mathbf{c}
+=-\big(\mathbf{c}-S^{-1}\mathbf{b}\big)^{\mathsf H}S\big(\mathbf{c}-S^{-1}\mathbf{b}\big)
++\mathbf{b}^{\mathsf H}S^{-1}\mathbf{b},
+\end{eqnarray}
+and is centred at
+\begin{eqnarray}
+\label{eq:chat_app}
+\hat{\mathbf{c}}\triangleq S^{-1}\mathbf{b}=S^{-1}\Phi^{\mathsf H}\bar{\mathbf{y}}/\sigma_w^{2}\in\mathbb{C}^{K},
+\end{eqnarray}
+with the system matrix $S\in\mathbb{C}^{K\times K}$,
+\begin{eqnarray}
+\label{eq:sysmat}
+S=\mathbf{T}^{-1}+\Phi(\mathbf{f})^{\mathsf H}\Phi(\mathbf{f})/\sigma_w^2,
+\end{eqnarray}
+which collects the prior precision and the Gram matrix of the frequency basis. Since $\mathbf{T}^{-1}$ is real diagonal and positive and $\Phi^{\mathsf H}\Phi$ is Hermitian positive semi-definite, $S$ is Hermitian positive definite, so $S^{-1}$ exists, $S^{-\mathsf H}=S^{-1}$, and the constant term of \eqref{eq:square} is $\mathbf{b}^{\mathsf H}S^{-1}\mathbf{b}=\hat{\mathbf{c}}^{\mathsf H}S\hat{\mathbf{c}}$. The remaining integral in \eqref{eq:quadform} is that of an unnormalized circularly symmetric complex Gaussian with precision $S$, and evaluates to $\pi^{K}/\det S$, so that
+\begin{eqnarray}
+\label{eq:amp_marg_explicit}
+p(\bar{\mathbf{y}}\mid\mathbf{f})
+= \frac{1}{\pi^{N}\sigma_w^{2N}\det\mathbf{T}\,\det S}
+  \exp\Big(\frac{\bar{\mathbf{y}}^{\mathsf H}\Phi S^{-1}\Phi^{\mathsf H}\bar{\mathbf{y}}}{\sigma_w^{4}}-\frac{\|\bar{\mathbf{y}}\|^{2}}{\sigma_w^{2}}\Big).
+\end{eqnarray}
+Applying the matrix inversion lemma and the Sylvester determinant identity to $\mathbf{C}=\Phi\mathbf{T}\Phi^{\mathsf H}+\sigma_w^2\mathbf{I}_N$,
+\begin{eqnarray}
+\label{eq:woodbury}
+\mathbf{C}^{-1}=\frac{1}{\sigma_w^2}\Big(\mathbf{I}_N-\frac{\Phi S^{-1}\Phi^{\mathsf H}}{\sigma_w^2}\Big),
+\qquad
+\det\mathbf{C}=\sigma_w^{2N}\det\mathbf{T}\,\det S,
+\end{eqnarray}
+where the determinant follows from
+$\det\mathbf{C}=\sigma_w^{2N}\det\big(\mathbf{I}_K+\Phi^{\mathsf H}\Phi\,\mathbf{T}/\sigma_w^{2}\big)
+=\sigma_w^{2N}\det\mathbf{T}\,\det\big(\mathbf{T}^{-1}+\Phi^{\mathsf H}\Phi/\sigma_w^{2}\big)$,
+so that the same $S$ appears in both. They identify the exponent of \eqref{eq:amp_marg_explicit} as $-\bar{\mathbf{y}}^{\mathsf H}\mathbf{C}^{-1}\bar{\mathbf{y}}$ and its prefactor as $1/(\pi^{N}\det\mathbf{C})$, giving the compact form
+\begin{eqnarray}
+\label{eq:amp_marg_result}
+p(\bar{\mathbf{y}}\mid\mathbf{f})=\mathcal{CN}\big(\mathbf{0},\,\mathbf{C}\big),
+\qquad \mathbf{C}=\Phi\mathbf{T}\Phi^{\mathsf H}+\sigma_w^2\mathbf{I}_N\in\mathbb{C}^{N\times N},
+\end{eqnarray}
+whose covariance is the sum of the signal and the noise contributions. The two identities are what let the $N\times N$ covariance $\mathbf{C}$ be handled through the $K\times K$ matrix $S$, with $K\ll N$. Taking $-\log$ of \eqref{eq:amp_marg_result} and dropping the constant $N\log\pi$,
+\begin{eqnarray}
+\label{eq:marginal}
+-\log p(\bar{\mathbf{y}}\mid\mathbf{f})
+=\underbrace{\frac{\|\bar{\mathbf{y}}\|^2}{\sigma_w^2}-\frac{\bar{\mathbf{y}}^{\mathsf H}\Phi S^{-1}\Phi^{\mathsf H}\bar{\mathbf{y}}}{\sigma_w^4}}_{\text{data fit}}
++\underbrace{N\log\sigma_w^2+\sum_k\log\tau_k^2+\log\det S}_{\text{log-determinant}}.
+\end{eqnarray}
+The $\mathbf{c}$-dependent factor left inside the integral of \eqref{eq:quadform} is the exponent of a complex Gaussian centred at $\hat{\mathbf{c}}$ with precision $S$, giving the amplitude posterior
+\begin{eqnarray}
+\label{eq:cpost}
+p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})=\mathcal{CN}(\hat{\mathbf{c}},\,\Sigma_{\mathbf{c}}),\qquad
+\hat{\mathbf{c}}=S^{-1}\Phi^{\mathsf H}\bar{\mathbf{y}}/\sigma_w^2,\qquad
+\Sigma_{\mathbf{c}}=S^{-1},
+\end{eqnarray}
+where $\Sigma_{\mathbf{c}}\in\mathbb{C}^{K\times K}$ has diagonal entries $\operatorname{Var}(c_k)=[S^{-1}]_{kk}$, both evaluated at the frequency posterior mean $\pmb{\mu}$.
 
+With $\pmb{\psi}=\{\mathbf{f},\mathbf{c}\}$, the variational distribution factors by the chain rule, and its conditional factor is set to the exact posterior \eqref{eq:cpost},
+\begin{eqnarray}
+\label{eq:chain_q}
+q(\pmb{\psi}\mid\bar{\mathbf{y}})=q(\mathbf{f}\mid\bar{\mathbf{y}})\,q(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})
+=q(\mathbf{f}\mid\bar{\mathbf{y}})\,p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f}),
+\end{eqnarray}
+which is admissible since the model is conjugate in $\mathbf{c}$, so that \eqref{eq:cpost} lies within the variational family. Substituting $p(\bar{\mathbf{y}}\mid\pmb{\psi})=p(\bar{\mathbf{y}}\mid\mathbf{f},\mathbf{c})$, the prior \eqref{eq:factor_prior} and \eqref{eq:chain_q} into the first line of \eqref{eq:ELBO}, and using $p(\bar{\mathbf{y}}\mid\mathbf{f},\mathbf{c})\,p(\mathbf{c})=p(\bar{\mathbf{y}}\mid\mathbf{f})\,p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})$,
+\begin{eqnarray}
+\label{eq:elbo_reduce}
+    \begin{array}{rl}
+     \mathcal{L}(\bar{\mathbf{y}})
+     & = \displaystyle\int_{\pmb{\psi}} q(\pmb{\psi}\mid\bar{\mathbf{y}})
+         \log\dfrac{p(\bar{\mathbf{y}}\mid\pmb{\psi})\,p(\pmb{\psi})}{q(\pmb{\psi}\mid\bar{\mathbf{y}})}\,d\pmb{\psi} \\[12pt]
+     & = \mathbb{E}_{q(\mathbf{f}\mid\bar{\mathbf{y}})}
+         \mathbb{E}_{p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})}\Big[
+         \log\dfrac{p(\bar{\mathbf{y}}\mid\mathbf{f},\mathbf{c})\,p(\mathbf{c})\,p(\mathbf{f})}
+                   {p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})\,q(\mathbf{f}\mid\bar{\mathbf{y}})}\Big] \\[12pt]
+     & = \mathbb{E}_{q(\mathbf{f}\mid\bar{\mathbf{y}})}
+         \mathbb{E}_{p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})}\Big[
+         \log\dfrac{p(\bar{\mathbf{y}}\mid\mathbf{f},\mathbf{c})\,p(\mathbf{c})}{p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})}\Big]
+       + \mathbb{E}_{q(\mathbf{f}\mid\bar{\mathbf{y}})}\Big[\log\dfrac{p(\mathbf{f})}{q(\mathbf{f}\mid\bar{\mathbf{y}})}\Big] \\[12pt]
+     & = \mathbb{E}_{q(\mathbf{f}\mid\bar{\mathbf{y}})}
+         \mathbb{E}_{p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})}\big[\log p(\bar{\mathbf{y}}\mid\mathbf{f})\big]
+       - \mathrm{D}_{\mathrm{KL}}\big(q(\mathbf{f}\mid\bar{\mathbf{y}}) \,\big\|\, p(\mathbf{f})\big),
+    \end{array}
+\end{eqnarray}
+whose integrand no longer depends on $\mathbf{c}$, so the inner expectation drops and
+\begin{eqnarray}
+\label{eq:elbo}
+\mathcal{L}(\bar{\mathbf{y}})=\mathbb{E}_{q(\mathbf{f}\mid\bar{\mathbf{y}})}\!\big[\log p(\bar{\mathbf{y}}\mid\mathbf{f})\big]
+-\mathrm{D}_{\mathrm{KL}}\big(q(\mathbf{f}\mid\bar{\mathbf{y}}) \,\big\|\, p(\mathbf{f})\big).
+\end{eqnarray}
+With a Gaussian variational factor per frequency and a flat prior on the band $[f_{\mathrm{lo}},f_{\mathrm{hi}}]$ the frequencies are drawn from,
+\begin{eqnarray}
+\label{eq:qf}
+q(\mathbf{f}\mid\bar{\mathbf{y}})=\prod_{k=1}^{K}\mathcal{N}(f_k;\mu_k,\sigma_k^2),
+\qquad
+p(\mathbf{f})=\prod_{k=1}^{K}\frac{1}{f_{\mathrm{hi}}-f_{\mathrm{lo}}},
+\end{eqnarray}
+where $\mu_k$ and $\sigma_k^2$ are the mean and variance of the $k$th variational factor, the Kullback--Leibler term is
+\begin{eqnarray}
+\label{eq:kl_entropy}
+\mathrm{D}_{\mathrm{KL}}\big(q(\mathbf{f}\mid\bar{\mathbf{y}}) \,\big\|\, p(\mathbf{f})\big)
+=-\sum_{k=1}^{K}\log\big(\sqrt{2\pi e}\,\sigma_k\big)+K\log\big(f_{\mathrm{hi}}-f_{\mathrm{lo}}\big),
+\end{eqnarray}
+and substituting \eqref{eq:marginal} and \eqref{eq:kl_entropy} into \eqref{eq:elbo} gives
+\begin{eqnarray}
+\label{eq:elbo_explicit}
+    \begin{array}{rl}
+     \mathcal{L}(\bar{\mathbf{y}})
+     & = -\,\mathbb{E}_{q(\mathbf{f}\mid\bar{\mathbf{y}})}\Big[
+         \dfrac{\|\bar{\mathbf{y}}\|^2}{\sigma_w^2}
+         -\dfrac{\bar{\mathbf{y}}^{\mathsf H}\Phi(\mathbf{f}) S^{-1}\Phi(\mathbf{f})^{\mathsf H}\bar{\mathbf{y}}}{\sigma_w^4}
+         + \log\det S(\mathbf{f})\Big] \\[12pt]
+     & \quad -\,N\log\sigma_w^2-\displaystyle\sum_{k=1}^{K}\log\tau_k^2
+       + \displaystyle\sum_{k=1}^{K}\log\sigma_k
+       - K\log\big(f_{\mathrm{hi}}-f_{\mathrm{lo}}\big) + \tfrac{K}{2}\log(2\pi e) \\[12pt]
+     & \triangleq \mathcal{L}\big(\bar{\mathbf{y}};\{\mu_k,\sigma_k,\tau_k^2\}_{k=1}^{K},\sigma_w^2\big).
+    \end{array}
+\end{eqnarray}
 Therefore, the learning approach is:
 \begin{eqnarray}
-    \arg\max_{\pmb{\theta}, \sigma^2} \mathcal{L}(\bar{\mathbf{y}}; \pmb{\theta}, \sigma^2)
+\label{eq:argmax}
+\arg\max_{\pmb{\lambda}}\ \mathcal{L}(\bar{\mathbf{y}};\pmb{\lambda}),
+\qquad \pmb{\lambda}\triangleq\big\{\{\mu_k,\sigma_k,\tau_k^2\}_{k=1}^{K},\,\sigma_w^2\big\}.
 \end{eqnarray}
 
-\textcolor{blue}{Fredrik please check the following argument:}
-As $N$ is large and $\sum_{k'=1}^{3K} \mathrm{D}_{\mathrm{KL}}(q(\psi_{k'} | \bar{\mathbf{y}}; \pmb{\theta}) \| p(\psi_{k'})) \geq 0$, at the time of maximization-based learning we can use an approximation as: 
+The overall approach is as follows. The encoder is first trained by supervised learning on the dataset $\mathcal{D}$, producing for each narrow band the probability $\rho_g$ that it contains a frequency together with the conditional posterior $p(f\mid\bar{\mathbf{y}},g)$ \eqref{eq:condgauss}, parameterized by $\pmb{\theta}$. Its $K$ highest-probability bands are taken as the candidate set. The corresponding conditional posteriors initialize the variational distribution. For each sequence $\bar{\mathbf{y}}$, the parameters $\pmb{\lambda}$ are then updated by \eqref{eq:argmax}. Maximizing \eqref{eq:elbo} finally yields the complete variational posterior \eqref{eq:chain_q} for that sequence. Fig.~\ref{fig:pipeline} shows the pipeline of the method, with the training of the encoder in Fig.~\ref{fig:pipeline_train} and the per-instance stage in Fig.~\ref{fig:pipeline_refine}.
+
+\subsection{Data-Driven Posterior Estimator}
+\label{sec:estimator}
+
+This section details the encoder that implements the band selector of Section~\ref{sec:approach}. Every sequence is first segmented into windows and mapped to time--frequency tokens by a parameter-free NUDFT projection. A transformer network then models the token dependencies along both the frequency and the time axis. Three per-band heads output the probability $\rho_g$ and the parameters $\mu_g$ and $\sigma_g^2$ of the conditional posterior \eqref{eq:condgauss} for each band $B_g$. The probability head is trained by multi-label classification, the mean head by mean squared error, and the variance head by Gaussian negative log-likelihood on $\mathcal{D}$ over the network parameters $\pmb{\theta}$.
+
+\subsubsection{Input Feature}
+\label{sec:input}
+
+Feeding the raw 1D time-domain sequence into a transformer is computationally expensive, because the cost of attention grows as $O(N^2 d)$ in the sequence length $N$, where $d$ is the model dimension. Following the framing idea from audio signal processing, we segment the long sequence into $M$ short windows. A window spans $W$ revolutions and the hop size is $h$ revolutions. The $m$th window is the short segment $\mathbf{u}_m=[y_{(m-1)hP+1},\dots,y_{((m-1)h+W)P}]^{\top}\in\mathbb{C}^{WP}$ with $m=1,\dots,M$.
+
+Attention provides no structural mechanism for reading the oscillating phase through which the frequency $f$ enters the signal \eqref{eq:signal}. We therefore apply a non-uniform DFT projection on each raw input $\mathbf{u}_m$. We divide the frequency band $[f_{\min}, f_{\max}]$ into $G$ grids of width $\Delta$~Hz. For the central frequency in each grid $f_g$, we project $\mathbf{u}_m$ onto the Fourier basis at $f_g$, evaluated at the true time-of-arrival $t_n$ rather than a uniform sampling grid:
 \begin{eqnarray}
-    \arg\max_{\pmb{\theta}, \sigma^2} \mathcal{L}(\bar{\mathbf{y}}; \pmb{\theta}, \sigma^2) \approx \arg\max_{\pmb{\theta}, \sigma^2} \displaystyle\sum_{n=1}^{N} \mathbb{E}_{q(\pmb{\psi} | \bar{\mathbf{y}} ; \pmb{\theta})} [\log p(y_{t_n}| \pmb{\psi})].
+\label{eq:nudft}
+F_{g,m} \;=\; \frac{1}{\sqrt{WP}}\sum_{n=(m-1)hP+1}^{((m-1)h+W)P} y_n\, e^{-j2\pi f_g t_n},
+\qquad g=1,\dots,G.
 \end{eqnarray}
-In the above case, we do not need to have the prior $p(\pmb{\psi})= \prod_{k'}^{3K} p(\psi_{k'})$, or can use a non-informative prior.
 
+The window-wise NUDFT projection turns each raw sequence $\bar{\mathbf{y}}$ of the dataset $\mathcal{D}$ \eqref{eq:dataset} into a time-frequency array $\{F_{g,m}\}$. A single NUDFT over the whole sequence would instead collapse the $M$ windows into one static spectrum. If the system changes sharply over a short time, as under a large fluctuation of the rotational speed, the frequency content of the whole sequence is altered. The window-wise projection keeps the array two-dimensional and only assumes the frequency content to be consistent within a single window, which holds for the constant-frequency case studied here and remains valid when the speed varies across windows. Each entry $F_{g,m}$ is the feature we hand to the encoder: its real and imaginary parts form a two-dimensional vector, giving an $M\times G$ array over the time and frequency axes.
 
-\subsection{Profile-LS formulation for global frequency inference}
-
-The equations already introduced above imply the following physical assumptions. The factorization of $p(\pmb{\psi})$ means that the sinusoidal parameters are a priori independent. The factorization of $p(\bar{\mathbf{y}}|\pmb{\psi})$ over time means that, conditioned on the sinusoidal parameters, the measurement noise is independent and identically distributed across observation times. The factorization of $q(\pmb{\psi}|\bar{\mathbf{y}};\pmb{\theta})$ means that the variational posterior neglects posterior dependence among different latent parameters. The use of a Gaussian likelihood means that the reconstruction error is modeled as additive Gaussian measurement noise.
-
-For the profile-LS formulation, amplitude and phase are combined into a complex coefficient,
+In a BTT signal the aliases are determined jointly by the rotational speed and the true frequency. The network must therefore resolve the aliasing structure to tell a true frequency from an alias. When the speed varies within a sequence, the true frequency alone no longer determines that structure and the speed is needed as well. The real times of arrival do carry the speed, but the projection \eqref{eq:nudft} absorbs them, so the array holds no speed information. We therefore organize the relative speed variation and the normalized absolute speed into a four-dimensional speed summary. Let $s_i=f_{\mathrm{rot},i}/f_{\mathrm{rot},1}-1$ be the normalized rotational speed of the $i$th revolution in the window and $i_c=i-\frac{1}{W}\sum_{i=1}^{W} i$ be the revolution index centred at its mean. Modelling the speed within the window as linear in $i_c$,
 \begin{eqnarray}
-    c_k \triangleq \alpha_k e^{j\phi_k},
-    \qquad
-    f_k \triangleq \frac{\omega_k}{2\pi},
+\label{eq:speedmodel}
+s_i=r_1+r_2\,i_c+\varepsilon_i ,
 \end{eqnarray}
-so that
+the first two components are the least-squares solution of that model,
 \begin{eqnarray}
-    x_t = \sum_{k=1}^{K} c_k e^{j2\pi f_k t}.
+\label{eq:ratefit}
+(r_1,r_2)=\arg\min_{a,b}\sum_{i=1}^{W}\big(s_i-a-b\,i_c\big)^{2}
+=\Bigg(\frac{1}{W}\sum_{i=1}^{W}s_i,\ \ \frac{\sum_{i=1}^{W} i_c\,s_i}{\sum_{i=1}^{W} i_c^{2}}\Bigg),
 \end{eqnarray}
-The following additional assumptions are required.
-
-\begin{myassump}[Non-overlapping patches]
-The long observation sequence is partitioned into $B$ non-overlapping patches,
+the third is the variance of the residual $\varepsilon_i$, and the fourth is the mean of absolute speed normalized by a fixed reference $f_{\mathrm{ref}}$ in the dataset
 \begin{eqnarray}
-    \bar{\mathbf{y}} = \{\mathbf{y}_1,\mathbf{y}_2,\ldots,\mathbf{y}_B\},
-    \qquad
-    \mathbf{y}_b = [y_{b,1},y_{b,2},\ldots,y_{b,L_b}]^{\top} \in \mathbb{C}^{L_b}.
+\label{eq:ratesummary}
+r_3=\frac{1}{W}\sum_{i=1}^{W}\big(s_i-r_1-r_2 i_c\big)^{2},
+\qquad
+r_4=\frac{1}{W f_{\mathrm{ref}}}\sum_{i=1}^{W}f_{\mathrm{rot},i}-1 .
 \end{eqnarray}
-Physically, every observation is used exactly once, so the patch likelihoods do not duplicate measurement information.
-\end{myassump}
+In practice, we take the median of all speeds in the dataset as its value.
 
-\begin{myassump}[One shared global frequency vector]
-All patches observe the same fixed frequency vector,
+The encoder therefore receives two inputs for each sequence. The first is the time-frequency array $\{F_{g,m}\}$, which holds the observation. The second is the set of speed summaries $\{\mathbf{r}_m\}_{m=1}^{M}$, one per window, which carries the speed that the projection has absorbed. The next section describes how each of them enters the network.
+
+\subsubsection{Model Architecture}
+\label{sec:arch}
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/axialEncoder.png}
+\caption{Architecture of the axial encoder. The middle section shows the overall structure, while the left and the right sections show the frequency-axis and the time-axis
+attention.}
+\label{fig:axial_encoder}
+\end{figure}
+
+The encoder is a two-dimensional axial transformer that maps the array $\{F_{g,m}\}$ to a posterior over frequency, with one axis along frequency and the other along time. The frequency-axis attention runs over the $G$ bands within a window and gives the local posterior $p(f\mid\mathbf{u}_m)$ of that window. The time-axis attention runs over the $M$ windows at each position, so that the read-out of every window rests on the whole sequence and gives the per-window posterior $p_m(f\mid\bar{\mathbf{y}})$. Their mean over the windows then gives the global posterior $p(f\mid\bar{\mathbf{y}})$. Fig.~\ref{fig:axial_encoder} shows the structure, which we describe below in the order of the token embedding, the speed injection, the attention blocks, the read-out heads, and the aggregation.
+
+A single linear layer $\mathbb{R}^{2}\to\mathbb{R}^{d}$ turns the array into tokens, taking the real and imaginary parts of each entry $F_{g,m}$ as a two-dimensional vector. Attention cannot distinguish the order of its inputs, so a position embedding is needed to record the frequency each token stands for. The frequency grid $\{f_g\}$ is fixed and shared by all sequences, so a learnable vector per band is trained to encode more than the index itself: the aliasing spacing, the edges of the physical band, and any other structure that is tied to an absolute position on the grid, none of which a fixed encoding of the index can express. We therefore add a learnable frequency position embedding $\mathbf{e}_g\in\mathbb{R}^{d}$ to each token,
 \begin{eqnarray}
-    \mathbf{f} = [f_1,f_2,\ldots,f_K]^{\top}.
+\label{eq:embed}
+\mathbf{z}_{g,m} \;=\; W_{\mathrm{in}}
+\begin{bmatrix}\mathrm{Re}\,F_{g,m}\\[2pt] \mathrm{Im}\,F_{g,m}\end{bmatrix}
++\mathbf{b}_{\mathrm{in}}+\mathbf{e}_g ,
+\qquad \mathbf{z}_{g,m}\in\mathbb{R}^{d},
 \end{eqnarray}
-Physically, the modal frequencies remain constant over the complete sequence, although the data are processed patch by patch.
-\end{myassump}
+where $W_{\mathrm{in}}\in\mathbb{R}^{d\times 2}$ and $\mathbf{b}_{\mathrm{in}}\in\mathbb{R}^{d}$ are shared across all $MG$ entries.
 
-\begin{myassump}[Patch-specific complex amplitudes]
-Each patch has its own complex-amplitude vector,
+A FiLM layer injects the speed summary into the tokens. A two-layer MLP maps $\mathbf{r}_m\in\mathbb{R}^{4}$ to $2d$ outputs through a hidden width of $64$. These are split into a scale and a shift acting on the tokens along the channel axis,
 \begin{eqnarray}
-    \mathbf{c}_b = [c_{b,1},c_{b,2},\ldots,c_{b,K}]^{\top} \in \mathbb{C}^{K},
+\label{eq:film}
+[\boldsymbol\gamma;\boldsymbol\beta]=W_2\,\mathrm{ReLU}(W_1\mathbf{r}_m+\mathbf{b}_1)+\mathbf{b}_2,
+\qquad
+\tilde{\mathbf{z}}_{g,m}=(\mathbf{1}+\boldsymbol\gamma)\odot\mathbf{z}_{g,m}+\boldsymbol\beta ,
 \end{eqnarray}
-and
+with $W_1\in\mathbb{R}^{64\times 4}$, $W_2\in\mathbb{R}^{2d\times 64}$ and $\boldsymbol\gamma,\boldsymbol\beta\in\mathbb{R}^{d}$. The same $(\boldsymbol\gamma,\boldsymbol\beta)$ reaches all $G$ tokens of the window, so the speed enters without disturbing the frequency identity of any band. $W_2$ and $\mathbf{b}_2$ are zero-initialized, so $\boldsymbol\gamma=\boldsymbol\beta=\mathbf{0}$ and the modulation starts as the identity.
+
+A stack of $L=4$ blocks then processes the modulated tokens $\{\tilde{\mathbf{z}}_{g,m}\}$. The basic operation is a pre-norm self-attention along one axis $a$, with a residual connection and a feed-forward network,
 \begin{eqnarray}
-    \mathbf{y}_b = \mathbf{\Phi}_b(\mathbf{f})\mathbf{c}_b + \mathbf{w}_b,
-    \qquad
-    [\mathbf{\Phi}_b(\mathbf{f})]_{n,k}=e^{j2\pi f_k t_{b,n}}.
+\label{eq:block}
+Z'=Z+\mathrm{MHA}\big(\mathrm{LN}(Z)\big),
+\qquad
+\mathrm{Axis}(Z;a)\triangleq Z'+\mathrm{FFN}\big(\mathrm{LN}(Z')\big),
+\qquad a\in\{\mathrm{f},\mathrm{t}\},
 \end{eqnarray}
-Physically, the frequencies are globally fixed, while amplitude and phase may change between patches.
-\end{myassump}
-
-\begin{myassump}[Proper complex Gaussian noise]
-The measurement noise satisfies
+where $Z$ collects the tokens along the axis $a$ on which the attention runs. Each block applies $\mathrm{Axis}(\cdot\,;\mathrm{f})$ and then $\mathrm{Axis}(\cdot\,;\mathrm{t})$, so that the stack holds $2L$ such operations in all. We write $\mathbf{z}^{\mathrm{f}}_{g,m}$ for the tokens leaving the frequency-axis operation of a block and $\mathbf{z}^{\mathrm{t}}_{g,m}$ for those leaving its time-axis operation, which are also the output of the block itself. The modulated tokens $\{\tilde{\mathbf{z}}_{g,m}\}$ enter the first block, the output of one block is the input of the next, and a superscript $(L)$ marks the tokens leaving the last one, so that $\mathbf{z}^{\mathrm{t},(L)}_{g,m}$ are the output of the whole stack. Skipping every time-axis operation and passing the tokens through the $L$ frequency-axis ones alone gives $\mathbf{z}^{\mathrm{f},(L)}_{g,m}$, a second read-out point used below. The attention uses $n_h$ heads; each projects $Z$ into queries, keys and values and mixes the tokens by the softmax of their scaled inner products,
 \begin{eqnarray}
-    w_{b,n} \overset{\mathrm{iid}}{\sim} \mathcal{CN}(0,\sigma_w^2),
-    \qquad
-    \mathbf{w}_b \sim \mathcal{CN}(\mathbf{0},\sigma_w^2\mathbf{I}_{L_b}).
+\label{eq:mha}
+Q=ZW_Q,\quad K=ZW_K,\quad V=ZW_V,
+\qquad
+\mathrm{Attn}=\mathrm{softmax}\!\Big(\frac{QK^{\mathsf T}}{\sqrt{d_h}}\Big)V,
 \end{eqnarray}
-Physically, the real and imaginary noise components are zero-mean Gaussian, circularly symmetric, and independent across all sampled times and patches.
-\end{myassump}
-
-\begin{myassump}[Conditional independence across patches]
-Conditioned on the shared frequency vector and the patch-specific amplitudes,
+with $W_Q,W_K,W_V\in\mathbb{R}^{d\times d_h}$ and $d_h=d/n_h$; the head outputs are concatenated and passed through an output projection $W_O\in\mathbb{R}^{d\times d}$. The feed-forward network is applied to each token separately and widens it to $2d$ before projecting it back,
 \begin{eqnarray}
-    p(\bar{\mathbf{y}}|\mathbf{f},\mathbf{c}_{1:B})
-    = \prod_{b=1}^{B}p(\mathbf{y}_b|\mathbf{f},\mathbf{c}_b).
+\label{eq:ffn}
+\mathrm{FFN}(\mathbf{z})=W_4\,\mathrm{GELU}(W_3\mathbf{z}+\mathbf{b}_3)+\mathbf{b}_4,
+\qquad W_3\in\mathbb{R}^{2d\times d},\quad W_4\in\mathbb{R}^{d\times 2d}.
 \end{eqnarray}
-Physically, after conditioning on the unknown sinusoidal parameters, one patch contains no additional stochastic information about another patch.
-\end{myassump}
-
-\begin{myassump}[Ridge least-squares profiling of complex amplitudes]
-For a given frequency vector, the complex amplitude in patch $b$ is replaced by
+The two axes share the form of \eqref{eq:block} and differ in three respects: which tokens form $Z$, whether a position term is applied inside the attention, and the number of heads. The frequency-axis attention takes the $G$ bands of a window as $Z$ and lets them attend to one another, bidirectional, so a single layer already links any pair of bands and shapes the window's local posterior. It uses $n_h=8$ heads. Its position information is the frequency embedding $\mathbf{e}_g$ already carried by the tokens, and no further position term is applied inside the attention. The time-axis attention takes the $M$ windows of a band as $Z$ and runs independently for each band, gathering into each window the evidence carried by the others. Its sequence is the short one, $M$ against $G$, and it uses $n_h=4$ heads. Here the position is the accumulated revolution count $\nu_m$ at which a window is taken, and it is applied inside the attention by RoPE,
 \begin{eqnarray}
-\begin{array}{rl}
-    \widehat{\mathbf{c}}_b(\mathbf{f})
-    & \triangleq \displaystyle\arg\min_{\mathbf{c}_b}
-    \left\{
-    \|\mathbf{y}_b-\mathbf{\Phi}_b(\mathbf{f})\mathbf{c}_b\|_2^2
-    +\lambda\|\mathbf{c}_b\|_2^2
-    \right\} \\
-    & = \left(\mathbf{\Phi}_b^{\mathrm{H}}(\mathbf{f})\mathbf{\Phi}_b(\mathbf{f})+\lambda\mathbf{I}\right)^{-1}
-    \mathbf{\Phi}_b^{\mathrm{H}}(\mathbf{f})\mathbf{y}_b.
-\end{array}
+\label{eq:rope}
+\mathrm{RoPE}(\mathbf{q},\nu_m)_{2i-1:2i}=
+\begin{bmatrix}\cos\omega_i\nu_m & -\sin\omega_i\nu_m\\ \sin\omega_i\nu_m & \cos\omega_i\nu_m\end{bmatrix}
+\mathbf{q}_{2i-1:2i},
 \end{eqnarray}
-Physically, amplitudes are nuisance parameters solved analytically for every sampled frequency vector rather than represented by a variational posterior.
-\end{myassump}
+applied to the rows of $Q$ and $K$ before the scores in \eqref{eq:mha} are formed, with $d_h/2$ rotation rates $\omega_i$ spaced logarithmically over $2\pi[0.1,10]$ per revolution. Because the rotation is orthogonal, the score of a pair of windows depends on them only through the difference $\nu_m-\nu_{m'}$, and does so as $\cos\omega_i(\nu_m-\nu_{m'})$, so that RoPE injects the phase relation between windows into the time-axis attention, which the projection \eqref{eq:nudft} can supply only within a window.
 
-\begin{myassump}[Uniform frequency prior on component-specific search bands]
-For $f_k\in[\ell_k,u_k]$,
+Three per-band heads finally read a token $\mathbf{z}^{\bullet}_{g,m}\in\mathbb{R}^{d}$, where $\bullet$ stands for whichever of the two read-out points is used. Each head is a linear map shared across bands and windows, equivalent to a kernel-size-one convolution,
 \begin{eqnarray}
-    p(f_k)=\frac{1}{u_k-\ell_k}\mathbf{1}_{[\ell_k,u_k]}(f_k),
+\label{eq:heads}
+\begin{aligned}
+o_{g,m}&=\mathbf{w}_o^\top\mathbf{z}^{\bullet}_{g,m}+b_o, \\
+\delta_{g,m}&=0.5\tanh\big(\mathbf{w}_\delta^\top\mathbf{z}^{\bullet}_{g,m}+b_\delta\big), \\
+\log\sigma_{g,m}&=\mathbf{w}_\sigma^\top\mathbf{z}^{\bullet}_{g,m}+b_\sigma,
+\end{aligned}
 \end{eqnarray}
-and
+The score $o_{g,m}$ indicates whether band $B_g$ contains one of the frequencies $\{f_k\}$. The offset $\delta_{g,m}$ is a sub-band shift in units of the band width $\Delta$ that moves the grid centre $f_g$ to that frequency. The scale $\sigma_{g,m}$ is the uncertainty of that frequency, also in band units. Reading the frequencies out this way, one score per band, is what keeps the labels free of identity: the $K$ frequencies share one band and carry no natural order, so regressing them directly would require matching each prediction to a ground-truth frequency, a set-prediction loss with a Hungarian assignment. A per-band score is compared with a per-band target and needs no such matching, and no band is committed to at this stage.
+
+Together the three outputs parameterize, for every band, the probability and the conditional posterior \eqref{eq:condgauss} of \S\ref{sec:approach}. The score gives this probability as $\rho_{g,m}=\mathrm{sigmoid}(o_{g,m})\in[0,1]$, the probability that one of the $\{f_k\}$ lies in band $B_g$, so that $\sum_g\rho_{g,m}\approx K$.\footnote{If the window is known to hold a single frequency, the probability can instead be normalized across bands, $\pi_{g,m}=\mathrm{softmax}_g(o_{g,m})$. We use the independent form throughout, since a window generally carries several frequencies.} The other two heads place the frequency within the band, the mean $\hat\mu_{g,m}$ moving the grid centre $f_g$ by the sub-band offset $\delta_{g,m}$ and $\sigma_{g,m}$ giving its standard deviation. The heads are applied at two points of the encoder, which differ only in the token put in place of $\mathbf{z}^{\bullet}_{g,m}$. Reading the frequency-axis output $\mathbf{z}^{\mathrm{f},(L)}_{g,m}$, which has passed no time-axis operation, gives a posterior conditioned on the window itself,
 \begin{eqnarray}
-    p(\mathbf{f})=\prod_{k=1}^{K}p(f_k).
+\label{eq:localpost}
+p_m(f\mid\mathbf{u}_m,\,g)=\mathcal{N}\!\big(f;\,\hat\mu_{g,m},\,\sigma_{g,m}^2\big),
+\qquad \hat\mu_{g,m}=f_g+\delta_{g,m}\Delta,
 \end{eqnarray}
-Physically, only the admissible search interval of each component is known a priori, and all frequencies inside that interval are treated as equally plausible.
-\end{myassump}
-
-\begin{myassump}[Factorized local truncated-Gaussian frequency posteriors]
-For every patch $b$, the DNN provides
+which is the read-out used in the first training stage, where the time axis is held frozen. Reading instead the time-axis output $\mathbf{z}^{\mathrm{t},(L)}_{g,m}$ of the last block gives the same form conditioned on the whole sequence,
 \begin{eqnarray}
-    q_b(\mathbf{f}|\mathbf{y}_b;\pmb{\theta})
-    = \prod_{k=1}^{K}q_b(f_k|\mathbf{y}_b;\pmb{\theta}),
+\label{eq:winpost}
+p_m(f\mid\bar{\mathbf{y}},\,g)=\mathcal{N}\!\big(f;\,\hat\mu_{g,m},\,\sigma_{g,m}^2\big),
 \end{eqnarray}
-where
+still one posterior per window and per band, but now resting on every window. Because the heads act per band with shared weights, the $\sigma$ head sees the same feature at every band, which is what later allows it to be calibrated (Section~\ref{sec:exp}).
+
+The $M$ posteriors of a band are $M$ estimates of the same frequency, so the $M$ tokens $\mathbf{z}^{\mathrm{t},(L)}_{g,1},\dots,\mathbf{z}^{\mathrm{t},(L)}_{g,M}$ they were read from are reduced to a single vector by their mean over the windows,
 \begin{eqnarray}
-    q_b(f_k|\mathbf{y}_b;\pmb{\theta})
-    =
-    \frac{
-    \varphi\!\left((f_k-\mu_{b,k})/\sigma_{b,k}\right)
-    }{
-    \sigma_{b,k} Z_{b,k}
-    }
-    \mathbf{1}_{[\ell_k,u_k]}(f_k),
+\label{eq:fusion}
+\bar{\mathbf{z}}_g=\frac{1}{M}\sum_{m=1}^{M}\mathbf{z}^{\mathrm{t},(L)}_{g,m}\in\mathbb{R}^{d}.
 \end{eqnarray}
+The reduction carries no parameter of its own and needs no training stage. It is taken per band, so the frequency identity of every band is kept, and it places no requirement on $M$. The heads \eqref{eq:heads} then read $\bar{\mathbf{z}}_g$ in place of $\mathbf{z}^{\bullet}_{g,m}$, giving one score, offset and log-scale per band, from which $\rho_g$, $\delta_g$ and $\sigma_g$ follow as they do per window, so that the global posterior takes the same form as \eqref{eq:winpost},
 \begin{eqnarray}
-    Z_{b,k}
-    =
-    \Phi\!\left(\frac{u_k-\mu_{b,k}}{\sigma_{b,k}}\right)
-    -
-    \Phi\!\left(\frac{\ell_k-\mu_{b,k}}{\sigma_{b,k}}\right).
+\label{eq:globalpost}
+\rho_g,\qquad p(f\mid\bar{\mathbf{y}},\,g)=\mathcal{N}\!\big(f;\,\hat\mu_g,\,\sigma_g^2\big),
+\qquad \hat\mu_g=f_g+\delta_g\Delta.
 \end{eqnarray}
-Physically, each patch provides independent evidence about the same global frequencies, while every frequency remains inside its known search band.
-\end{myassump}
+This is the pair the estimator was asked for in \eqref{eq:condgauss}, and it is what the second stage selects its candidates from.
 
-\begin{myassump}[Global posterior obtained by posterior fusion]
-The global variational posterior is formed from the local patch posteriors according to
+\subsubsection{Training Loss}
+\label{sec:loss}
+
+We train the encoder in a supervised manner on simulated sequences, for which the true frequencies $\{f_k^\ast\}_{k=1}^{K}$ are known. Each head carries a different task and therefore a different loss. The probability is a multi-label classification over the bands, since several of them may hold a frequency at once, and is trained by a binary cross-entropy. A hard one-hot target would however treat every band next to a true frequency as a negative example, so we follow DeepFreq~\cite{izacard_data-driven_2021} in encoding the true position by a Gaussian kernel and use a soft target instead. The offset is a bounded regression and is trained by a squared error. The scale must predict the error of that regression, which a squared error cannot supervise, so it is trained by a Gaussian negative log-likelihood.
+
+Each true frequency $f_k^\ast$ is first assigned to the band that contains it, indexed by
 \begin{eqnarray}
-    q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})
-    \propto
-    p(\mathbf{f})^{1-B}
-    \prod_{b=1}^{B}q_b(\mathbf{f}|\mathbf{y}_b;\pmb{\theta}).
+\label{eq:anchor}
+b_k=\arg\min_g\,|f_g-f_k^\ast|,
 \end{eqnarray}
-Physically, all non-overlapping patches contribute evidence about one shared frequency vector, while the common prior is counted only once.
-\end{myassump}
-
-\subsubsection{Derivation of the global frequency posterior}
-
+and since the minimum separation between frequencies ($6$~Hz) exceeds the grid spacing ($\Delta=2$~Hz), each band holds at most one true frequency. The soft target places a Gaussian bump on each band $B_{b_k}$, combined by a per-band maximum,
 \begin{eqnarray}
-\begin{array}{rl}
-p(\mathbf{f}|\bar{\mathbf{y}})
-& = p(\mathbf{f}|\mathbf{y}_1,\ldots,\mathbf{y}_B) \\
-& = p(\mathbf{f})\displaystyle\frac{p(\mathbf{y}_1,\ldots,\mathbf{y}_B|\mathbf{f})}{p(\mathbf{y}_1,\ldots,\mathbf{y}_B)}  \\
-& = p(\mathbf{f})\displaystyle\frac{\prod_{b=1}^{B}p(\mathbf{y}_b|\mathbf{f})}{p(\mathbf{y}_1,\ldots,\mathbf{y}_B)} \\
-& = \displaystyle\frac{p(\mathbf{f})}{p(\mathbf{y}_1,\ldots,\mathbf{y}_B)}\displaystyle\prod_{b=1}^{B}
-\frac{p(\mathbf{f}|\mathbf{y}_b)p(\mathbf{y}_b)}{p(\mathbf{f})} \\
-& \propto p(\mathbf{f})^{1-B}\displaystyle\prod_{b=1}^{B}p(\mathbf{f}|\mathbf{y}_b).
-\end{array}
+\label{eq:softlabel}
+y^{\mathrm{soft}}_g=\max_{k}\exp\!\Big(-\frac{(g-b_k)^2}{2\sigma_{\mathrm{score}}^2}\Big),
+\qquad \sigma_{\mathrm{score}}=1\ \text{band},
 \end{eqnarray}
-
+which lets bands next to a true frequency share some of its target rather than forcing a hard one-hot. The offset is supervised only at the $K$ bands that contain a true frequency, whose true sub-band offset is the distance from the band centre in band units,
 \begin{eqnarray}
-\begin{array}{rl}
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})
-& \triangleq \displaystyle\prod_{k=1}^{K} 
-q_{\mathrm{G},k}(f_k|\bar{\mathbf{y}};\pmb{\theta}) \\
-& \propto \displaystyle\prod_{k=1}^{K}
-\left[
-p(f_k)^{1-B}
-\prod_{b=1}^{B}q_b(f_k|\mathbf{y}_b;\pmb{\theta})
-\right]\\
-& \propto \displaystyle\prod_{k=1}^{K}
-\left[\mathbf{1}_{[\ell_k,u_k]}(f_k)
-\displaystyle\prod_{b=1}^{B}
-\exp\!\left[-\frac{(f_k-\mu_{b,k})^2}{2\sigma_{b,k}^2}\right]\right] \\
-& \propto \displaystyle\prod_{k=1}^{K}
-\left[\mathbf{1}_{[\ell_k,u_k]}(f_k)
-\exp\!\left[
--\frac{1}{2}
-\sum_{b=1}^{B}
-\frac{(f_k-\mu_{b,k})^2}{\sigma_{b,k}^2}
-\right]\right] \\
-& \propto \displaystyle\prod_{k=1}^{K}
-\left[ \mathbf{1}_{[\ell_k,u_k]}(f_k)
-\exp\!\left[
--\frac{(f_k-\mu_{\mathrm{G},k})^2}{2\sigma_{\mathrm{G},k}^2}
-\right]\right].
-\end{array}
+\label{eq:deltatrue}
+\delta^\ast_k=\mathrm{clip}\!\Big(\frac{f_k^\ast-f_{b_k}}{\Delta},\,-0.5,\,0.5\Big).
 \end{eqnarray}
+Under the constant-frequency assumption these targets are the same for every window, so one set of labels supervises all $M$ read-outs.
 
-
+The three heads are trained in two phases, the first for detection and sub-band location, the second for the uncertainty. The first phase minimizes the binary cross-entropy of the score together with the squared error of the offset,
 \begin{eqnarray}
-    \sigma_{\mathrm{G},k}^{2}
-    =\left(\sum_{b=1}^{B}\sigma_{b,k}^{-2}\right)^{-1},
-\
-    \mu_{\mathrm{G},k}
-    =\sigma_{\mathrm{G},k}^{2}
-    \sum_{b=1}^{B}\frac{\mu_{b,k}}{\sigma_{b,k}^{2}}
+\label{eq:lscore}
+L_{\mathrm{score}}+L_\delta=
+-\frac{1}{MG}\sum_{m=1}^{M}\sum_{g=1}^{G}\Big[y^{\mathrm{soft}}_g\log\rho_{g,m}
++\big(1-y^{\mathrm{soft}}_g\big)\log\big(1-\rho_{g,m}\big)\Big]
++\frac{1}{MK}\sum_{m=1}^{M}\sum_{k=1}^{K}\big(\delta_{b_k,m}-\delta^\ast_k\big)^2,
 \end{eqnarray}
-
+which trains the score head and the sub-band accuracy of the mean while leaving $\sigma$ untouched. The second phase fixes the score and offset heads, so that the frequency estimate no longer changes and $\sigma_{g,m}$ can be trained to match the offset error it should predict. We use the Gaussian negative log-likelihood, again only at the $K$ bands that contain a true frequency so that the empty ones do not dilute it,
 \begin{eqnarray}
-    a_{\mathrm{G},k}
-    \triangleq\frac{\ell_k-\mu_{\mathrm{G},k}}{\sigma_{\mathrm{G},k}},
-    \qquad
-    b_{\mathrm{G},k}
-    \triangleq\frac{u_k-\mu_{\mathrm{G},k}}{\sigma_{\mathrm{G},k}},
-    \qquad
-    Z_{\mathrm{G},k}
-    \triangleq
-    \Phi(b_{\mathrm{G},k})-\Phi(a_{\mathrm{G},k}),
+\label{eq:gnll}
+L_{\mathrm{GNLL}}=\frac{1}{MK}\sum_{m=1}^{M}\sum_{k=1}^{K}\left[\log\sigma_{b_k,m}+\frac{(\delta_{b_k,m}-\delta^\ast_k)^2}{2\,\sigma_{b_k,m}^2}\right],
 \end{eqnarray}
+dropping the constant $\tfrac12\log 2\pi$. Minimizing \eqref{eq:gnll} over $\sigma$ alone drives it to $\sigma_{b_k,m}\!\to\!|\delta_{b_k,m}-\delta^\ast_k|$, the actual offset error, so the trained $\sigma_{g,m}$ is a calibrated uncertainty rather than a free parameter.
 
+The two phases are applied to each part of the encoder in turn, following the order in which the data flows through it. The frequency axis is trained first, with the time-axis layers held frozen at their zero-initialized state so that the heads read the frequency-axis output \eqref{eq:localpost}. The time-axis layers are then released and trained on top of the frozen frequency axis, with the heads now reading the last block \eqref{eq:winpost}. Both are supervised per window, as written in \eqref{eq:lscore} and \eqref{eq:gnll}. Four stages result, two for each axis. The reduction \eqref{eq:fusion} adds none, since it holds no parameter and reuses the heads trained here; the score and scale heads are linear, so reading the mean of the windows and averaging the per-window read-outs give the same result.
+
+\subsection{Per-Instance Variational Learning}
+\label{sec:refine}
+
+The second stage trains no network. For each sequence it maximizes $\mathcal{L}(\bar{\mathbf{y}};\pmb{\lambda})$ over $\pmb{\lambda}=\{\{\mu_k,\sigma_k,\tau_k^2\}_{k=1}^{K},\sigma_w^2\}$ on its own, with the encoder held fixed. The global posterior $p(f\mid\bar{\mathbf{y}},g)$ enters only as the starting point: it selects which bands are optimized and sets the initial $(\mu_k,\sigma_k)$ of each factor. The amplitudes $\mathbf{c}$ are not among the free variables, having been marginalized in closed form, and are recovered from $p(\mathbf{c}\mid\bar{\mathbf{y}},\mathbf{f})=\mathcal{CN}(\hat{\mathbf{c}},S^{-1})$ once the optimization has converged. What the stage adds to the encoder is therefore the physical signal model, which the encoder never sees.
+
+The variational factors are read off the global posterior \eqref{eq:globalpost}. We take the $K_c=K+M_{\mathrm{extra}}$ bands of largest $\rho_g$ as candidates, with $M_{\mathrm{extra}}=2$, keeping more of them than there are frequencies because the amplitude step below drives the spurious ones to zero, so that they do not contaminate the fit. The posterior conditioned on the selected band $B_{g_k}$ is the Gaussian $p(f\mid\bar{\mathbf{y}},g_k)$, parameterized by $\hat\mu_{g_k}(\bar{\mathbf{y}})$ and $\sigma_{g_k}(\bar{\mathbf{y}})$, and it initializes the variational factor of the $k$th candidate,
 \begin{eqnarray}
-    q_{\mathrm{G},k}(f_k|\bar{\mathbf{y}};\pmb{\theta})
-    \propto
-    \frac{
-    \varphi\!\left((f_k-\mu_{\mathrm{G},k})/\sigma_{\mathrm{G},k}\right)
-    }{
-    \sigma_{\mathrm{G},k}Z_{\mathrm{G},k}
-    }
-    \mathbf{1}_{[\ell_k,u_k]}(f_k),
+\label{eq:qinit}
+q(f_k\mid\bar{\mathbf{y}})=\mathcal{N}(\mu_k,\sigma_k^2),
+\qquad
+(\mu_k,\sigma_k)\leftarrow\big(\hat\mu_{g_k}(\bar{\mathbf{y}}),\,\sigma_{g_k}(\bar{\mathbf{y}})\,\Delta\big),
 \end{eqnarray}
+The free variables of $q$ are $\{\mu_k,\log\sigma_k\}_{k=1}^{K_c}$, the scale being optimized in the log domain to keep it positive, and one set is shared by the whole sequence so that the fit uses the full observation length rather than any single window.
 
-
-\begin{myassump}[Monte Carlo evaluation]
-The likelihood expectation is approximated using $S$ samples,
+Every term of $\mathcal{L}(\bar{\mathbf{y}};\pmb{\lambda})$ is available in closed form except the expectation over $q$, which we estimate by Monte Carlo. Sampling $f_k\sim q(f_k\mid\bar{\mathbf{y}})$ directly makes the sampling operation non-differentiable with respect to $\mu_k$ and $\sigma_k$, leaving the score-function estimator as the only option and with it a high gradient variance. We therefore use the reparameterization trick of the variational autoencoder~\cite{kingma_auto-encoding_2014}, moving the stochasticity to a parameter-free variable,
 \begin{eqnarray}
-    \mathbf{f}^{(s)} \sim q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta}),
-    \qquad s=1,2,\ldots,S.
+\label{eq:reparam}
+f_k^{(v)}=\mu_k+\sigma_k\,\epsilon_k^{(v)},
+\qquad \epsilon_k^{(v)}\sim\mathcal{N}(0,1),
+\qquad v=1,\dots,R,
 \end{eqnarray}
-Physically, every sampled global frequency vector is applied to all patches, while the patch-specific amplitudes are re-estimated for that sample.
-\end{myassump}
-
-The replacement of the amplitude posterior by $\widehat{\mathbf{c}}_b(\mathbf{f})$ changes the original joint frequency--amplitude ELBO into a frequency-only profile objective. The derivation below therefore continues the original ELBO after analytically profiling out the nuisance amplitudes.
-
-\subsection{Continuation of the ELBO derivation for profile LS}
-
+where $R$ is the number of Monte Carlo samples drawn per gradient step. One draw gives a single frequency vector $\mathbf{f}^{(v)}$ that the whole sequence shares: the same $K_c$ frequencies enter the likelihood of all $N$ observations, as they must, since the sequence is generated by one set of frequencies rather than by a different set at every arrival time. Each sample is a deterministic and differentiable function of $\pmb{\lambda}$, so the pathwise gradient can be taken through it,
 \begin{eqnarray}
-\begin{array}{rl} p\!\left(\mathbf{y}_b|\mathbf{f},\widehat{\mathbf{c}}_b(\mathbf{f})\right) 
-& \triangleq
-\widetilde{p}(\mathbf{y}_b|\mathbf{f}) 
-\end{array}
+\label{eq:mcelbo}
+\mathbb{E}_{q(\mathbf{f}\mid\bar{\mathbf{y}})}\big[\log p(\bar{\mathbf{y}}\mid\mathbf{f})\big]
+\;\approx\;-\frac{1}{R}\sum_{v=1}^{R}\left[
+\frac{1}{\sigma_w^2}\sum_{n=1}^{N}|y_n|^2
+-\frac{\bar{\mathbf{y}}^{\mathsf H}\Phi^{(v)}\big(S^{(v)}\big)^{-1}\Phi^{(v)\mathsf H}\bar{\mathbf{y}}}{\sigma_w^4}
++\log\det S^{(v)}\right]
+-N\log\sigma_w^2-\sum_{k}\log\tau_k^2,
 \end{eqnarray}
+where $\Phi^{(v)}=\Phi(\mathbf{f}^{(v)})$ has entries $e^{\,j2\pi f_k^{(v)}t_n}$, so that $\Phi^{(v)\mathsf H}\bar{\mathbf{y}}$ collects the projections $\sum_n y_n e^{-j2\pi f_k^{(v)}t_n}$ of the sequence onto the sampled frequencies, and $S^{(v)}=\mathbf{T}^{-1}+\Phi^{(v)\mathsf H}\Phi^{(v)}/\sigma_w^2$ with $\big[\Phi^{(v)\mathsf H}\Phi^{(v)}\big]_{kl}=\sum_n e^{\,j2\pi(f_l^{(v)}-f_k^{(v)})t_n}$. Only the three terms inside the brackets carry the sample; the last two do not and are left outside the average.
 
+After optimization the amplitude posterior follows in closed form \eqref{eq:cpost}, its mean giving the amplitude estimate and $[S^{-1}]_{kk}$ its uncertainty. The amplitudes also settle which candidates are real: a band that carries no frequency finds no support in $\bar{\mathbf{y}}$ and is pulled toward zero by the prior, so the $K$ candidates of largest $|\hat c_k|$ are returned as $\{\hat f_k=\mu_k\}$ and the remaining $M_{\mathrm{extra}}$ are discarded. The two selections rest on different evidence, the first on the probability the encoder assigns to a band and the second on the amplitude the signal model assigns to it, which is why the candidate set is allowed to be larger than $K$. The procedure is summarized in Algorithm~\ref{alg:refine}.
+
+\begin{algorithm}[t]
+\caption{Per-instance variational learning}
+\label{alg:refine}
+\begin{algorithmic}[1]
+\State \textbf{Input:} sequence $\bar{\mathbf{y}}$, arrival times $\{t_n\}_{n=1}^{N}$, encoder outputs $\{\rho_g,\hat\mu_g,\sigma_g\}_{g=1}^{G}$, number of frequencies $K$, steps $n_{\mathrm{steps}}$, samples $R$
+\State $\{g_k\}_{k=1}^{K_c}\gets\operatorname*{arg\,max}_{g}{}^{(K_c)}\rho_g$, \quad $K_c=K+M_{\mathrm{extra}}$ \Comment{candidate bands, $M_{\mathrm{extra}}=2$}
+\State $\mu_k\gets\hat\mu_{g_k}$, \quad $\sigma_k\gets\sigma_{g_k}\Delta$ \Comment{variational factors from the encoder}
+\State $\mathbf{c}_0\gets\big(\Phi^{\mathsf H}\Phi\big)^{-1}\Phi^{\mathsf H}\bar{\mathbf{y}}$ at $\pmb{\mu}$; \quad $\tau_k^2\gets|c_{0,k}|^2$, \quad $\sigma_w^2\gets\tfrac1N\|\bar{\mathbf{y}}-\Phi\mathbf{c}_0\|^2$ \Comment{variances from a least-squares fit}
+\For{$t=1$ to $n_{\mathrm{steps}}$}
+  \State $f_k^{(v)}\gets\mu_k+\sigma_k\epsilon_k^{(v)}$, \quad $\epsilon_k^{(v)}\sim\mathcal{N}(0,1)$, \quad $v=1,\dots,R$ \Comment{reparameterized samples}
+  \State $\big[\Phi^{(v)}\big]_{nk}\gets e^{\,j2\pi f_k^{(v)}t_n}$, \quad $S^{(v)}\gets\mathbf{T}^{-1}+\Phi^{(v)\mathsf H}\Phi^{(v)}/\sigma_w^2$ \Comment{observation and system matrix}
+  \State $\log p\big(\bar{\mathbf{y}}\mid\mathbf{f}^{(v)}\big)\gets-\dfrac{1}{\sigma_w^2}\displaystyle\sum_{n=1}^{N}|y_n|^2+\dfrac{\bar{\mathbf{y}}^{\mathsf H}\Phi^{(v)}\big(S^{(v)}\big)^{-1}\Phi^{(v)\mathsf H}\bar{\mathbf{y}}}{\sigma_w^4}
+  -N\log\sigma_w^2-\displaystyle\sum_k\log\tau_k^2-\log\det S^{(v)}$ \Comment{marginal log-likelihood}
+  \State $\mathcal{L}(\bar{\mathbf{y}};\pmb{\lambda})\gets\dfrac1R\displaystyle\sum_{v=1}^{R}\log p\big(\bar{\mathbf{y}}\mid\mathbf{f}^{(v)}\big)+\sum_{k=1}^{K_c}\log\sigma_k$ \Comment{ELBO \eqref{eq:elbo_explicit}, dropping terms free of $\pmb{\lambda}$}
+  \State $\pmb{\lambda}\gets\mathrm{Adam}\big(\pmb{\lambda},\,\nabla_{\pmb{\lambda}}\mathcal{L}(\bar{\mathbf{y}};\pmb{\lambda})\big)$, \quad $\pmb{\lambda}=\{\mu_k,\log\sigma_k,\tau_k^2,\sigma_w^2\}$ \Comment{ascent step}
+\EndFor
+\State $S_0\gets\mathbf{T}^{-1}+\Phi^{\mathsf H}\Phi/\sigma_w^2$ at $\pmb{\mu}$; \quad $\hat{\mathbf{c}}\gets S_0^{-1}\Phi^{\mathsf H}\bar{\mathbf{y}}/\sigma_w^2$ \Comment{amplitude posterior mean}
+\State $\mathcal{K}\gets\operatorname*{arg\,max}_{k}{}^{(K)}|\hat c_k|$ \Comment{keep the $K$ largest amplitudes, discarding the $M_{\mathrm{extra}}$ spurious ones}
+\State \textbf{Output:} for each $k\in\mathcal{K}$, the frequency $\mu_k$ and its variance $\sigma_k^2$, the amplitude $\hat c_k$ and its variance $[S_0^{-1}]_{kk}$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Simulation Results}
+\label{sec:exp}
+
+\subsection{Dataset Generation and Evaluation Metric}
+\label{sec:exp_setup}
+
+We use the signal model \eqref{eq:signal} to generate the dataset $\mathcal{D}$. The generation takes two steps: simulating the times of arrival, which are set by the the probes layout and by the rotational speed, and drawing the parameters of sinusoids from the prior $p(\pmb{\psi})$.
+
+We use $P=8$ probes with a fixed spatial layout taken from a real BTT system, at the circumferential angles
 \begin{eqnarray}
-\begin{array}{rl}
-\log \widetilde{p}(\bar{\mathbf{y}}|\mathbf{f})
-& = \displaystyle\sum_{b=1}^{B}\log \widetilde{p}(\mathbf{y}_b|\mathbf{f}) 
-= -\displaystyle\sum_{b=1}^{B}L_b\log(\pi\sigma_w^2)
--\frac{1}{\sigma_w^2}
-\displaystyle\sum_{b=1}^{B}
-\left\|\mathbf{y}_b-\mathbf{\Phi}_b(\mathbf{f})\widehat{\mathbf{c}}_b(\mathbf{f})\right\|_2^2.
-\end{array}
+\label{eq:probeangles}
+\{\theta_p\}_{p=1}^{8}=\{0,\,9.47,\,29.00,\,43.12,\,70.08,\,80.66,\,94.06,\,112.54\}^\circ,
 \end{eqnarray}
-
+The rotation frequency of the $r$th revolution is generated by
 \begin{eqnarray}
-\begin{array}{rl}
-\mathcal{L}_{\mathrm{profile}}(\bar{\mathbf{y}};\pmb{\theta})
-& \triangleq \displaystyle\int_{\mathbf{f}}
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})
-\log\frac{\widetilde{p}(\bar{\mathbf{y}}|\mathbf{f})p(\mathbf{f})}
-{q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})}
-\,d\mathbf{f} \\
-& = \displaystyle\int_{\mathbf{f}}
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})
-\log\widetilde{p}(\bar{\mathbf{y}}|\mathbf{f})\,d\mathbf{f}
--\displaystyle\int_{\mathbf{f}}
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})
-\log\frac{q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})}{p(\mathbf{f})}\,d\mathbf{f} \\
-& = \mathbb{E}_{q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})}
-\left[\log\widetilde{p}(\bar{\mathbf{y}}|\mathbf{f})\right]
--\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})\|p(\mathbf{f})
-\right) \\
-& = \mathbb{E}_{q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})}
-\left[
--\displaystyle\sum_{b=1}^{B}L_b\log(\pi\sigma_w^2)
--\frac{1}{\sigma_w^2}
-\displaystyle\sum_{b=1}^{B}
-\left\|\mathbf{y}_b-\mathbf{\Phi}_b(\mathbf{f})\widehat{\mathbf{c}}_b(\mathbf{f})\right\|_2^2
-\right] -\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})\|p(\mathbf{f})
-\right) \\
-& = \displaystyle-\sum_{b=1}^{B}L_b\log(\pi\sigma_w^2)
--\frac{1}{\sigma_w^2}
-\mathbb{E}_{q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})}
-\left[
-\displaystyle\sum_{b=1}^{B}
-\left\|\mathbf{y}_b-\mathbf{\Phi}_b(\mathbf{f})\widehat{\mathbf{c}}_b(\mathbf{f})\right\|_2^2
-\right] -\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})\|p(\mathbf{f})
-\right) \\
-& \approx \displaystyle-\sum_{b=1}^{B}L_b\log(\pi\sigma_w^2) -\displaystyle\frac{1}{S\sigma_w^2}
-\sum_{s=1}^{S}\sum_{b=1}^{B}
-\left\|
-\mathbf{y}_b-\mathbf{\Phi}_b(\mathbf{f}^{(s)})
-\widehat{\mathbf{c}}_b(\mathbf{f}^{(s)})
-\right\|_2^2 -\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})\|p(\mathbf{f})
-\right) \\
-& = \displaystyle-\sum_{b=1}^{B}L_b\log(\pi\sigma_w^2) -\displaystyle\frac{1}{S\sigma_w^2}
-\sum_{s=1}^{S}\sum_{b=1}^{B}
-\left\|
-\mathbf{y}_b-\mathbf{\Phi}_b(\mathbf{f}^{(s)})
-\left(
-\mathbf{\Phi}_b^{\mathrm{H}}(\mathbf{f}^{(s)})
-\mathbf{\Phi}_b(\mathbf{f}^{(s)})+\lambda\mathbf{I}
-\right)^{-1}
-\mathbf{\Phi}_b^{\mathrm{H}}(\mathbf{f}^{(s)})\mathbf{y}_b
-\right\|_2^2 \\
-& \quad -\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})\|p(\mathbf{f})
-\right).
-\end{array}
+\label{eq:speedgen}
+f_{\mathrm{rot},r}=f_0\Big(1+\rho\,r+\sum_{i=1}^{r}\eta_i\Big),
+\qquad \eta_i\sim\mathcal{N}(0,\varsigma^2),
 \end{eqnarray}
+where $f_0\sim\mathcal{U}[25,45]$~Hz is the baseline speed of that sequence, $\rho$ is the slope of a linear ramp and $\eta_i$ accumulates into a random fluctuation around it; we set $\rho=1.5\times10^{-3}$ per revolution and $\varsigma=3\times10^{-3}$. The random fluctuation models the speed variation caused by instabilities such as temperature and airflow during operation, while the linear ramp models the rotational speed commanded by an active control system. Both of them destroy the periodicity of the sampling. The arrival times are simulated by \eqref{eq:toa}.
 
-\subsubsection{Expansion of the global frequency KL divergence}
+Fig.~\ref{fig:toa_samples} shows the sampling pattern of the probe layout in \eqref{eq:probeangles}. This layout makes the sampling only happen in the first half revolution. The frequencies and amplitudes of the sinusoids are the same as those of the example in Fig.~\ref{fig:btt_toa}.
+Fig.~\ref{fig:rev_speed} shows the rotational speed variation within a whole sequence. The solid blue line is the rotational speed $f_{\mathrm{rot},r}$ of \eqref{eq:speedgen}, the dotted line is the baseline speed $f_0$, and the dashed line is the linear ramp $f_0(1+\rho r)$ alone. The random fluctuation models the speed variation caused by instabilities such as temperature and airflow during operation, while the linear ramp models the rotational speed commanded by an active control system. They both break the periodicity of the sampling.
 
+\begin{figure}[!t]
+\centering
+\begin{subfigure}[b]{\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/TOA_samples_only.png}
+  \caption{Sampling pattern.}
+  \label{fig:toa_samples}
+\end{subfigure}
+
+\vspace{2mm}
+\begin{subfigure}[b]{\linewidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/rev_speed.png}
+  \caption{Per-revolution rotational speed.}
+  \label{fig:rev_speed}
+\end{subfigure}
+\caption{One generated sequence. (a) sampling pattern. (b) per-revolution speed.}
+\label{fig:data}
+\end{figure}
+
+We assume the number of sinusoids to be known and set $K=6$ for the dataset. For each sinusoid the frequency and the complex amplitude are drawn independently. The frequency prior is non-informative, uniform over $[f_{\mathrm{lo}},f_{\mathrm{hi}}]=[5,495]$~Hz, subject to a minimum separation of $6$~Hz between any two frequencies so that they remain resolvable. The complex amplitude is drawn as
 \begin{eqnarray}
-\begin{array}{rl}
-\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})
-\|p(\mathbf{f})
-\right)
-& = \displaystyle\sum_{k=1}^{K}
-\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G},k}(f_k|\bar{\mathbf{y}};\pmb{\theta})
-\|p(f_k)
-\right).
-\end{array}
+\label{eq:ampgen}
+c_k=\big(|w_k|+\alpha_{\mathrm{floor}}\big)e^{j\phi_k},
+\qquad w_k\sim\mathcal{N}(0,1),
+\qquad \phi_k\sim\mathcal{U}[0,2\pi).
 \end{eqnarray}
+The weakest sinusoid limits the attainable performance, so we fix the smallest possible amplitude at $\alpha_{\mathrm{floor}}=0.1$.
 
+Each sequence spans $104$ revolutions and is segmented into windows of $W=16$ revolutions with a hopsize of $h=8$. The noise variance of a sequence follows from its signal-to-noise ratio, which we define by the power of the \emph{weakest} sinusoid relative to the noise power,
 \begin{eqnarray}
-\begin{array}{rl}
-\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G},k}\|p(f_k)
-\right)
-& = \displaystyle\int_{\ell_k}^{u_k}
-q_{\mathrm{G},k}(f_k)
-\log\frac{q_{\mathrm{G},k}(f_k)}{p(f_k)}\,df_k \\
-& = \displaystyle\int_{\ell_k}^{u_k}
-q_{\mathrm{G},k}(f_k)
-\log\left[
-\frac{u_k-\ell_k}{\sigma_{\mathrm{G},k}Z_{\mathrm{G},k}}
-\varphi\!\left(
-\frac{f_k-\mu_{\mathrm{G},k}}{\sigma_{\mathrm{G},k}}
-\right)
-\right]df_k \\
-& = \log\frac{u_k-\ell_k}
-{\sigma_{\mathrm{G},k}Z_{\mathrm{G},k}\sqrt{2\pi}}
--\frac{1}{2}
-\mathbb{E}_{q_{\mathrm{G},k}}
-\left[
-\left(
-\frac{f_k-\mu_{\mathrm{G},k}}{\sigma_{\mathrm{G},k}}
-\right)^2
-\right].
-\end{array}
+\label{eq:snr}
+\mathrm{SNR}\triangleq10\log_{10}\frac{\min_{k}\alpha_k^2}{\sigma_w^2}\ \ [\mathrm{dB}].
 \end{eqnarray}
+A mixed SNR training is used for the noise robustness. The SNR of each sequence is first sampled from $\mathcal{U}[0,50]$~dB. By solving \eqref{eq:snr}, we obtain the variance $\sigma_w^2=\min_k\alpha_k^2\,10^{-\mathrm{SNR}/10}$ and then generate $N$ samples $w_n\sim\mathcal{CN}(0,\sigma_w^2)$ independently.
 
+Different metrics are used for the results of the encoder and of the variational learning. The detection rate of the frequency estimates of the encoder is assessed by two recall metrics, $\mathrm{R}@K$ and $\mathrm{all}K$, which are based on a coverage criterion where an estimate may be shared by several true frequencies. In the variational learning stage, the RMSE is used to assess the accuracy of the estimated frequencies and amplitudes, on the pairs given by a one-to-one assignment; it is reported under two conventions, restricted to the pairs that fall within the tolerance and over all components with the tolerance removed. The recall and the RMSE use the same tolerance $f_{\tau} = 2$~Hz. When two true frequencies lie closer than $2f_{\tau}$, $f_{\tau}=\min(2,\Delta f_{\mathrm{sep}}/2)$~Hz is used instead.
+
+\emph{Recall.} Let $f_k^{\ast(i)}$, $k=1,\dots,K$, denote the true frequencies of the $i$th evaluation sequence, $i=1,\dots,Q$, and $\hat f_j^{(i)}$, $j=1,\dots,K$, the estimates returned for that sequence. The $k$th true frequency counts as covered if some estimate falls within $f_{\tau}$ of it, which is recorded by the indicator
 \begin{eqnarray}
-\mathbb{E}_{q_{\mathrm{G},k}}
-\left[
-\left(
-\frac{f_k-\mu_{\mathrm{G},k}}{\sigma_{\mathrm{G},k}}
-\right)^2
-\right]
-=
-1+
-\frac{
-a_{\mathrm{G},k}\varphi(a_{\mathrm{G},k})
--b_{\mathrm{G},k}\varphi(b_{\mathrm{G},k})
-}{Z_{\mathrm{G},k}},
+\label{eq:covered}
+m_k^{(i)}=\mathds{1}\Big\{\min_{1\le j\le K}\big|\hat f_j^{(i)}-f_k^{\ast(i)}\big|\le f_{\tau}\Big\}.
 \end{eqnarray}
-
+Each true frequency is paired with its nearest estimate, and the estimate is returned to the candidate set afterwards, so the same estimate may be paired with several true frequencies. For the encoder the estimates $\hat f_j^{(i)}$ are read from the $K$ bands of largest $\rho_g$, subject to a minimum separation between the selected bands, taking the sub-band position $\hat\mu_g=f_g+\delta_g\Delta$ of \eqref{eq:localpost}. Averaging over the $Q$ sequences,
 \begin{eqnarray}
-\begin{array}{rl}
-\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G},k}\|p(f_k)
-\right)
-& = \log\frac{u_k-\ell_k}
-{\sigma_{\mathrm{G},k}Z_{\mathrm{G},k}\sqrt{2\pi}}
--\frac{1}{2}
-\left[
-1+
-\frac{
-a_{\mathrm{G},k}\varphi(a_{\mathrm{G},k})
--b_{\mathrm{G},k}\varphi(b_{\mathrm{G},k})
-}{Z_{\mathrm{G},k}}
-\right] \\
-& = \log\frac{u_k-\ell_k}
-{\sigma_{\mathrm{G},k}Z_{\mathrm{G},k}\sqrt{2\pi e}}
--
-\frac{
-a_{\mathrm{G},k}\varphi(a_{\mathrm{G},k})
--b_{\mathrm{G},k}\varphi(b_{\mathrm{G},k})
-}{2Z_{\mathrm{G},k}}.
-\end{array}
+\label{eq:recall}
+\mathrm{R}@K=\frac{1}{QK}\sum_{i=1}^{Q}\sum_{k=1}^{K}m_{k}^{(i)},
+\qquad
+\mathrm{all}K=\frac{1}{Q}\sum_{i=1}^{Q}\prod_{k=1}^{K}m_{k}^{(i)}.
 \end{eqnarray}
+The two differ in scope, a single frequency for one and the $K$ frequencies of a sequence for the other. $\mathrm{R}@K$ measures, on average, how many true frequencies are covered; $\mathrm{all}K$ how often every true frequency of a sequence is covered at once. The latter is the criterion that reflects the final result, since the variational stage is initialized with the $K$ estimates of a sequence as a whole and a single missed frequency cannot be recovered from them.
 
+\emph{RMSE.} Accuracy requires knowing which estimate belongs to which true frequency, so here the estimates are paired one-to-one. The assignment that minimizes the total distance is solved,
 \begin{eqnarray}
-\begin{array}{rl}
-\mathrm{D}_{\mathrm{KL}}\!\left(
-q_{\mathrm{G}}(\mathbf{f}|\bar{\mathbf{y}};\pmb{\theta})
-\|p(\mathbf{f})
-\right)
-& = \displaystyle\sum_{k=1}^{K}
-\left[
-\log\frac{u_k-\ell_k}
-{\sigma_{\mathrm{G},k}Z_{\mathrm{G},k}\sqrt{2\pi e}}
--
-\frac{
-a_{\mathrm{G},k}\varphi(a_{\mathrm{G},k})
--b_{\mathrm{G},k}\varphi(b_{\mathrm{G},k})
-}{2Z_{\mathrm{G},k}}
-\right].
-\end{array}
+\label{eq:assign}
+\pi^\star=\arg\min_{\pi}\sum_{k}\big|\hat f_{\pi(k)}-f_k^\ast\big|,
 \end{eqnarray}
+by the Hungarian algorithm over the cost matrix $[\,|\hat f_j-f_k^\ast|\,]_{kj}$, and then keep the pairs that fall within the tolerance,
+\begin{eqnarray}
+\label{eq:matchset}
+\mathcal{M}=\big\{(k,\pi^\star(k))\ :\ |\hat f_{\pi^\star(k)}-f_k^\ast|\le f_{\tau}\big\}.
+\end{eqnarray}
+A global assignment minimizes the total distance over all pairings at once, so the result does not depend on the order in which the true frequencies are visited, which matters precisely when they are closely spaced. Since $\pi^\star$ is a bijection, no estimate is credited to two true frequencies, and $|\mathcal{M}|/K$ is in general below $\mathrm{R}@K$; the gap counts the true frequencies that share their nearest estimate with another.
 
+The frequency accuracy is
+\begin{eqnarray}
+\label{eq:rmse_f}
+\mathrm{RMSE}_f=\bigg(\frac{1}{|\mathcal{M}|}\sum_{(k,k')\in\mathcal{M}}\big(\hat f_{k'}-f^\ast_{k}\big)^2\bigg)^{1/2},
+\end{eqnarray}
+and the amplitude accuracy is taken relative to the true amplitude, so that strong and weak frequencies contribute on the same scale,
+\begin{eqnarray}
+\label{eq:rmse_a}
+\mathrm{RMSE}_\alpha=\bigg(\frac{1}{|\mathcal{M}|}\sum_{(k,k')\in\mathcal{M}}\frac{\big(|\hat c_{k'}|-\alpha^\ast_{k}\big)^2}{\alpha_{k}^{\ast 2}}\bigg)^{1/2}.
+\end{eqnarray}
+Both quantities are reported under two conventions, which differ only in the tolerance used to form $\mathcal{M}$ in \eqref{eq:matchset}. The matched error takes $f_{\tau}$ as above, so that a band selected wrongly is excluded from the average. This keeps the average from being contaminated by the extreme values of a wrong selection. The all-component error takes $f_{\tau}=\infty$, so that $\mathcal{M}$ retains all $K$ pairs of the assignment and the mismatched ones are kept in the average,
+\begin{eqnarray}
+\label{eq:rmse_all}
+\mathcal{M}_{\mathrm{all}}=\big\{(k,\pi^\star(k))\big\}_{k=1}^{K},
+\end{eqnarray}
+with $\mathrm{RMSE}_f^{\mathrm{all}}$ and $\mathrm{RMSE}_\alpha^{\mathrm{all}}$ given by \eqref{eq:rmse_f} and \eqref{eq:rmse_a} evaluated over $\mathcal{M}_{\mathrm{all}}$ in place of $\mathcal{M}$. The matched error measures how accurately a frequency is estimated once it has been selected correctly, while the all-component error is an upper bound on robustness, as it is the cost incurred when a wrong band is never discarded; evaluating the two next to $\mathrm{R}@K$ distinguishes a method that resolves poorly from one that resolves well but occasionally locks onto an alias.
 
+\subsection{Training Configuration}
+\label{sec:exp_config}
 
+For the NUDFT projection, the physical band $[f_{\min},f_{\max}]=[0,500]$~Hz is divided into $G=251$ bands of width $\Delta=2$~Hz. The frequency prior of Section~\ref{sec:exp_setup} is confined to $[5,495]$~Hz, a $5$~Hz margin inside the physical band, so that no true frequency falls on the outermost band centre. The soft target \eqref{eq:softlabel} is one band wide, $\sigma_{\mathrm{score}}=1$.
 
+The simulator generates the sequences on the fly. Each sequence is drawn from its own seed and is used only once. The number of sequences a stage consumes is the number of steps times its batch size. Validation draws from seeds disjoint from the training ones, and its size is the number of validation batches listed in Table~\ref{tab:trainconfig} times the batch size of that stage: $2048$ windows for the frequency axis, $256$ sequences for the time axis and $512$ for the last three stages.
 
+There are 4 stages in the training of the encoder. All stages use optimizer AdamW with a default weight decay of $10^{-2}$. The cosine learning rate annealing strategy is used in the first three stages. The rate is constant until the step listed in Table~\ref{tab:trainconfig} and is then annealed to $10^{-2}$ of its initial value. Table~\ref{tab:trainconfig} lists the details of each stage. 
 
-%\appendices
-%\section{Proof of the First Zonklar Equation}
-%Appendix one text goes here.
+The model selected for evaluation is the one with the highest $\mathrm{R}@K$ for the first and the third stage. For the calibration stages the recall is constant by construction, so the model selected is the one whose $\sigma_k$ best agrees with the observed error. We trained the model on a single NVIDIA RTX 4080 Super GPU and the four stages together take roughly $2.8$ hours. 
 
-% you can choose not to have a title for an appendix
-% if you want by leaving the argument blank
+\begin{table}[t]
+\caption{Training configuration and training time of each stage.}
+\label{tab:trainconfig}
+\centering
+\begin{tabular}{lccccccc}
+\hline
+Stages & Steps & Batch size & Learning rate & Anneal from & Val.\ batches & Parameters & Time \\
+\hline
+Frequency axis & $60\,000$ & $256$ & $3\times10^{-4}$ & $40\,000$ & $8$ & $0.58$\,M & $76.5$ min \\
+Frequency axis, calibration & $20\,000$ & $256$ & $3\times10^{-4}$ & $6\,000$ & $8$ & $129$ & $8.6$ min \\
+Time axis & $8\,000$ & $32$ & $1\times10^{-3}$ & $4\,800$ & $8$ & $0.53$\,M & $33.9$ min \\
+Time axis, calibration & $20\,000$ & $32$ & $3\times10^{-4}$ & --- & $16$ & $129$ & $51.2$ min \\
+\hline
+Total & & & & & & $1.11$\,M & $2.84$ h \\
+\hline
+\end{tabular}
+\end{table}
+
+In the variational learning, each sequence is optimized for $n_{\mathrm{steps}}=600$ steps by Adam. The learning rates are constant in the optimization, with $3\times10^{-2}$ for the means $\mu_k$, $3\times10^{-1}$ for the log scales $\log\sigma_k$, and $3\times10^{-2}$ for the two variances $\tau_k^2$ and $\sigma_w^2$, both optimized in the log domain. For each step, $R=16$ samples are taken to calculate the expectation in \eqref{eq:mcelbo}. We keep $M_{\mathrm{extra}}=2$ candidates beyond the $K$ frequencies.
+
+\subsection{Intuitive Demonstration}
+\label{sec:exp_demo}
+
+We compare the ability of the encoder stages to cover the true frequencies with their candidate bands, under the two recall criteria. The calibration stages freeze the backbone, the score head and the mean head, so their recall equals that of the stage before them. Fig.~\ref{fig:stage1_sum_encoder} reports only the two stages that differ: the first stage, which reads a single window, and the full encoder, which fuses all windows by \eqref{eq:fusion}. For the full encoder we further vary the number of selected peaks, $L\in\{K,K+2,K+4\}$, which separates two kinds of candidate generation failure. In the first, a peak already sits near the true band but the score ranks it below the top $K$; in the second, no recoverable peak sits near that band at all. Enlarging $L$ recalls the former and leaves the latter untouched. Two baselines serve as references. The random baseline selects $K$ bands uniformly at random from the $G$ bands and covers a true frequency with probability $1-(1-(2f_{\tau}/\Delta+1)/G)^{K}$, the lower bound that corresponds to no learning ability. The sum baseline adds the scores of the same band across windows to form a global posterior; for disjoint windows carrying independent evidence, it approximates the upper bound on the evidence an untrained time axis can accumulate. Our windows overlap by half, so this sum counts the shared samples twice and only approximates that bound. The two metrics differ in the granularity at which they count: $\mathrm{R}@K$ averages the coverage over the individual true frequencies, whereas $\mathrm{all}K$ requires all $K$ true frequencies of one sequence to be covered at once, which makes it the stricter, sequence-level criterion of success.
+
+The results show that the full encoder holds a stable coverage of the true bands over the $0$--$30$~dB range it was trained on, and that it generalizes below that range with certain robustness to noise. Near $-5$~dB it still recalls the true frequencies well, which indicates that the cross-window temporal fusion has not learned a local peak pattern tied to the training SNR, but continues to integrate the evidence of several windows under stronger noise. As the SNR is lower, the loss of accuracy mainly reflects that the frequency peaks themselves become harder to distinguish under extreme noise, rather than a failure of the candidate generation within the training range. Varying $L$ shows further that the errors of the encoder do not come, in the main, from correct peaks left at a low rank. At $20$~dB, $\mathrm{all}K$ rises by only $2.3\%$ from $L=K$ to $L=K+2$, and by $1.2\%$ more from $L=K+2$ to $L=K+4$, so enlarging the candidate set recovers few ranking errors. The variational stage therefore keeps $K_c=K+2$, which suffices to cover the recoverable misses of the encoder while keeping the candidate set away from the range where spurious noise peaks enter more easily. Meanwhile, $\mathrm{all}K$ falls below $\mathrm{R}@K$ at every setting, as the strictness of the two metrics leads one to expect: the former asks a sequence to cover all of its true frequencies at once, whereas the latter counts the average recall of the individual frequencies. Taken together, the two metrics show that the encoder covers the candidate peaks near the true frequencies reliably at the level of a single frequency, and that it also keeps a dependable sequence-level candidate quality within the training range and under the low-SNR extrapolation just outside it.
+
+\begin{figure*}[!t]
+\centering
+\begin{subfigure}[b]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/stage1_sum_encoder_recall_vs_snr.png}
+  \caption{Recall versus SNR.}
+  \label{fig:stage1_recall_vs_snr}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/stage1_sum_encoder_allk_vs_snr.png}
+  \caption{All-$K$ success rate versus SNR.}
+  \label{fig:stage1_allk_vs_snr}
+\end{subfigure}
+\caption{Recall rate via SNR on different stages of the encoder.}
+\label{fig:stage1_sum_encoder}
+\end{figure*}
+
+Fig.~\ref{fig:spectrum_nudft} illustrates how DeepMUSIC turns an alias-contaminated frequency representation into calibrated spectral estimates. The NUDFT input exposes explicit candidate frequency structure, but the largest power peaks can include aliases of the dominant sinusoid, so reliable estimation cannot be obtained by simply selecting the top-$K$ NUDFT peaks. The learned stages instead use the candidate structure as evidence, and separate the true components from the aliases through uncertainty calibration and amplitude reassignment.
+
+The two SNR cases show complementary regimes of this mechanism. At $20$~dB, the true frequencies receive sharper and more confident peaks than their aliases, and the variational stage returns the $K$ candidates of largest $|\hat c_k|$, which reassigns the amplitude toward the physically consistent components and leaves the aliases out. At $-15$~dB, the weakest components approach the noise floor and become physically ambiguous; the components that remain identifiable are nevertheless localized with calibrated uncertainty, and the variational learning sharpens their peaks further. The visualization thus supports the role of the variational stage as a refinement and calibration module rather than a simple peak selector.
+\begin{figure*}[!t]
+\centering
+\begin{subfigure}[b]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/spectrum_nudft_-15dB.png}
+  \caption{$\mathrm{SNR}=-15$\,dB.}
+  \label{fig:spectrum_nudft_m15db}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.49\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{figures/spectrum_nudft_20dB.png}
+  \caption{$\mathrm{SNR}=20$\,dB.}
+  \label{fig:spectrum_nudft_20db}
+\end{subfigure}
+\caption{Spectra of one representative sequence: the NUDFT of the raw input (top), and the estimates before (middle) and after (bottom) variational learning. True amplitudes are the least-squares solution given the true frequencies, so that amplitudes are comparable across panels; in the middle and bottom panels, peak width represents the uncertainty of the estimate.}
+\label{fig:spectrum_nudft}
+\end{figure*}
+
+The convergence curve verifies that the per-instance variational optimization is stable within the fixed computational budget used in the experiments. Over $500$ test sequences at $20$~dB, the negative ELBO decreases rapidly at the beginning and then reaches a plateau. During the last $100$ of the $600$ optimization steps, the relative change of the ELBO is only $0.3\%$, and the frequency and amplitude errors change by no more than $4\%$. This indicates that the chosen $600$-step budget is sufficient for both the variational objective and the resulting parameter estimates to stabilize, providing a reliable basis for the subsequent error-distribution analysis.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\linewidth]{figures/convergence_20dB.png}
+\caption{Convergence of the per-instance variational stage, as the median over $500$ sequences at $20$~dB. Left: the negative ELBO, the objective being minimized. Right: the frequency and relative amplitude errors against the truth, on a shared logarithmic axis.}
+\label{fig:convergence}
+\end{figure}
+
+The boxplot and quantile statistics further show that the variational stage turns the coarse candidates of the encoder into high-precision continuous parameter estimates. Over $500$ test sequences at $20$~dB, variational learning sharply contracts the central error distribution: the interquartile range falls from $0.038$ to $0.0010$~Hz for frequency and from $0.018$ to $0.0010$ for relative amplitude, corresponding to reductions of about $37\times$ and $15\times$. The median error after variational learning is close to zero, with a median relative-amplitude error of about $0.05\%$, showing that the refinement remains nearly unbiased. More importantly, $99\%$ of the frequency estimates after variational learning fall within $0.004$~Hz of the truth, far below the $2$~Hz grid on which the encoder selects its initial candidates. Thus, the second stage does not merely reorder candidate bands; it performs continuous frequency inversion at a resolution far beyond the initial grid.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=0.75\linewidth]{figures/error_box_20dB.png}
+\caption{Estimation-error distributions over $500$ sequences at $20$~dB, before and after variational learning. Each box marks the interquartile range, with whiskers at $1.5\times$IQR.}
+\label{fig:error_box}
+\end{figure}
+
+\begin{table}[!t]
+\caption{Quantiles of the absolute error over $500$ sequences at $20$~dB.}
+\label{tab:error_quantiles}
+\centering
+\begin{tabular}{llcccc}
+\hline
+Stage & Quantity & $50\%$ & $75\%$ & $90\%$ & $99\%$ \\
+\hline
+Before & Frequency (Hz)   & $0.01913$ & $0.03721$ & $0.07078$ & $0.23112$ \\
+Before & Amplitude (rel.) & $0.00747$ & $0.02058$ & $0.06585$ & $0.62688$ \\
+After  & Frequency (Hz)   & $0.00051$ & $0.00099$ & $0.00165$ & $0.00417$ \\
+After  & Amplitude (rel.) & $0.00051$ & $0.00123$ & $0.00243$ & $0.00540$ \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Comparsion with classical method}
+\label{sec:exp_input}
+
+To evaluate the performance of the proposed method, we compare it with classical widely used methods for BTT signals, including MUSIC\cite{wang_improved_2020}, block-OMP\cite{bouchain_blade_2019}, lasso\cite{tibshirani_regression_2011}, Spice\cite{kharyton_advanced_2021} and NUDFT. We first analyse the frequency sepctra as shown in Fig.~\ref{fig:classical}. The sequecne is sampled from D with the sinusoid parameter configuation same as that of \ref{fig:btt_toa} but in SNR = 20dB. The cross of red dash lines indicate the true parameters.
+The failture of MUSIC is expected since the non-periodic sampling breaks the steering sector sttucture. The NUDFT spetrum is used as baseline to show the alias cancelling capability of each method. Apart from them, only k peaks represented by the blue line are shown in figure instead of complete spectra.
+Three on-grid sparse methods are tested with two frequency grids. The comparison exposes a core limitation of grid-based recovery rather than a tuning issue. With a coarse grid, basis mismatch causes weak off-grid components to leak into neighboring atoms. The response near 54.1 Hz exists, but its weight is lower than aliasing-induced competitors, so it is excluded from the top-K detections. A finer grid reduces on-grid error, but increases dictionary mutual coherence. Strong components then split across adjacent atoms, as seen near 260.7 Hz and 308.6 Hz. The spurious 356-357 Hz peak further shows that residual aliasing remains after grid refinement. Our method avoids this grid-resolution trade-off. Its learned encoder captures the aliasing structure under speed fluctuation, allowing weak true components to be separated from strong aliasing peaks. The subsequent continuous-domain refinement removes the accuracy limit imposed by the discrete grid. As a result, our method recovers all six components with accurate frequency and amplitude estimates.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=0.8\linewidth]{figures/classical_comparison.png}
+\caption{Synthetic signal spectra with MUSIC, Block-OMP, LASSO, SPICE, NUFT, and the proposed method (from top to bottom) at variable rotational speed.}
+\label{fig:classical}
+\end{figure}
+
+\subsection{Feasibility on Measured BTT Data}
+\label{sec:exp_real}
+
 
 
 % use section* for acknowledgment
@@ -1057,8 +1390,9 @@ a_{\mathrm{G},k}\varphi(a_{\mathrm{G},k})
 % set second argument of \begin to the number of references
 % (used to reserve space for the reference number labels box)
 
-\bibliographystyle{IEEEbib}
-%\bibliography{ref,ref_alireza,biblio_saikat_ANN}
+\bibliographystyle{IEEEtran}
+\bibliography{Reference/simens/reference}
+
 % biography section
 % 
 % If you have an EPS/PDF photo (graphicx package needed) extra braces are
@@ -1103,5 +1437,3 @@ a_{\mathrm{G},k}\varphi(a_{\mathrm{G},k})
 
 % that's all folks
 \end{document}
-
-

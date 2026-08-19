@@ -1,0 +1,67 @@
+This is BibTeX, Version 0.99e
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: DeepMUSIC.aux
+Reallocating 'name_of_file' (item size: 1) to 9 items.
+The style file: IEEEtran.bst
+Reallocating 'name_of_file' (item size: 1) to 27 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Reallocating 'wiz_functions' (item size: 4) to 6000 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Database file #1: Reference/simens/reference.bib
+-- IEEEtran.bst version 1.14 (2015/08/26) by Michael Shell.
+-- http://www.michaelshell.org/tex/ieeetran/bibtex/
+-- See the "IEEEtran_bst_HOWTO.pdf" manual for usage information.
+Warning--empty journal in li_robust_nodate
+Warning--empty year in li_robust_nodate
+Warning--empty booktitle in zablotskiy_measurement_1978
+Warning--empty booktitle in nieberding_optical_1977
+Warning--empty journal in guida_modal_nodate
+Warning--empty year in guida_modal_nodate
+Warning--empty journal in guida_bayesian_nodate
+Warning--empty year in guida_bayesian_nodate
+
+Done.
+You've used 32 entries,
+            4087 wiz_defined-function locations,
+            1041 strings with 15938 characters,
+and the built_in function-call counts, 26169 in all, are:
+= -- 2168
+> -- 644
+< -- 194
++ -- 349
+- -- 118
+* -- 1377
+:= -- 3897
+add.period$ -- 67
+call.type$ -- 32
+change.case$ -- 37
+chr.to.int$ -- 426
+cite$ -- 40
+duplicate$ -- 1895
+empty$ -- 1993
+format.name$ -- 148
+if$ -- 6088
+int.to.chr$ -- 0
+int.to.str$ -- 32
+missing$ -- 335
+newline$ -- 159
+num.names$ -- 32
+pop$ -- 778
+preamble$ -- 1
+purify$ -- 0
+quote$ -- 2
+skip$ -- 2005
+stack$ -- 0
+substring$ -- 1134
+swap$ -- 1607
+text.length$ -- 52
+text.prefix$ -- 0
+top$ -- 5
+type$ -- 32
+warning$ -- 8
+while$ -- 95
+width$ -- 34
+write$ -- 385
+(There were 8 warnings)
